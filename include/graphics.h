@@ -61,9 +61,9 @@ void effect_shake(uint16_t intensity, uint16_t duration);
 void effect_update(void); // Call each frame to update active effects
 
 // HUD rendering (for Agent B to implement in detail)
-typedef struct Player Player; // Forward declaration
+struct Player; // Forward declaration
 void hud_init(void);
-void hud_render(Player* p);
+void hud_render(struct Player* p);
 void hud_set_visibility(bool visible);
 
 // Screen transitions

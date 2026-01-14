@@ -31,14 +31,8 @@ if [ ! -d "/c/devkitPro" ] && [ ! -d "$HOME/devkitPro" ] && [ ! -d "/opt/devkitp
     exit 1
 fi
 
-# Determine devkitPro path
-if [ -d "/c/devkitPro" ]; then
-    export DEVKITPRO=/c/devkitPro
-elif [ -d "$HOME/devkitPro" ]; then
-    export DEVKITPRO=$HOME/devkitPro
-elif [ -d "/opt/devkitpro" ]; then
-    export DEVKITPRO=/opt/devkitpro
-fi
+# Determine devkitPro path - always use the real installed path
+export DEVKITPRO=/c/devkitPro
 
 echo -e "${GREEN}✓ devkitPro found at: $DEVKITPRO${NC}"
 
@@ -128,8 +122,8 @@ echo ""
 # Create build directory
 mkdir -p build
 
-# Run make
-if make "$@"; then
+# Run make with explicit environment variables
+if make DEVKITPRO="$DEVKITPRO" DEVKITARM="$DEVKITARM" LIBNDS="$LIBNDS" "$@"; then
     echo ""
     echo -e "${GREEN}✓ Build successful!${NC}"
 else

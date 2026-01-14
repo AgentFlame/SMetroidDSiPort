@@ -161,11 +161,13 @@ void save_data_from_game_state(SaveData* data) {
     data->equipped_beams = player->equipped_beams;
 
     // Get room data (extern from room.h)
-    extern uint8_t g_current_area;
-    extern uint8_t g_current_room;
-
-    data->current_area = g_current_area;
-    data->current_room = g_current_room;
+    if (g_current_room != NULL) {
+        data->current_area = g_current_room->area_id;
+        data->current_room = g_current_room->room_id;
+    } else {
+        data->current_area = 0;
+        data->current_room = 0;
+    }
 
     // Get player position
     int32_t px, py;

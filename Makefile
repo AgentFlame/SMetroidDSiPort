@@ -4,11 +4,29 @@
 .SUFFIXES:
 #---------------------------------------------------------------------------------
 
+# Allow environment variables to be passed from build.sh
+DEVKITPRO ?= /c/devkitPro
+DEVKITARM ?= $(DEVKITPRO)/devkitARM
+LIBNDS ?= $(DEVKITPRO)/libnds
+
 ifeq ($(strip $(DEVKITARM)),)
 $(error "DEVKITARM not set. Please run ./build.sh which sets the environment properly")
 endif
 
-include $(DEVKITARM)/ds_rules
+.PHONY: all clean build
+
+# Define the extra defines that would normally come from ds_rules
+CALICO := $(DEVKITPRO)/calico
+_EXTRADEFS := -D__NDS__ -I$(CALICO)/include
+
+# ARM Toolchain
+PREFIX  := arm-none-eabi-
+CC      := $(PREFIX)gcc
+CXX     := $(PREFIX)g++
+AS      := $(PREFIX)as
+LD      := $(PREFIX)gcc
+OBJCOPY := $(PREFIX)objcopy
+AR      := $(PREFIX)ar
 
 #---------------------------------------------------------------------------------
 # TARGET is the name of the output
@@ -31,21 +49,21 @@ GRAPHICS  :=
 ARCH := -marm -mthumb-interwork -march=armv5te -mtune=arm946e-s
 
 CFLAGS   := -g -Wall -O2 \
-            $(ARCH) $(INCLUDE) -DARM9
+            $(ARCH) $(INCLUDE) -DARM9 -DARM_INTERWORK
 CXXFLAGS := $(CFLAGS) -fno-rtti -fno-exceptions
-ASFLAGS  := -g $(ARCH)
-LDFLAGS  = -specs=ds_arm9.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map)
+ASFLAGS  := -g $(ARCH) -DARM9
+LDFLAGS  = -specs=$(CALICO)/share/ds9.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map)
 
 #---------------------------------------------------------------------------------
 # any extra libraries we wish to link with the project (order matters!)
 #---------------------------------------------------------------------------------
-LIBS := -lfat -lnds9
+LIBS := -lcalico_ds9 -lfat -lnds9
 
 #---------------------------------------------------------------------------------
 # list of directories containing libraries, this must be the top level containing
 # include and lib
 #---------------------------------------------------------------------------------
-LIBDIRS := $(LIBNDS)
+LIBDIRS := $(CALICO) $(LIBNDS)
 
 #---------------------------------------------------------------------------------
 # no real need to edit anything past this point unless you need to add additional
@@ -90,7 +108,7 @@ export INCLUDE := $(foreach dir,$(INCLUDES),-I$(CURDIR)/$(dir)) \
 
 export LIBPATHS := $(foreach dir,$(LIBDIRS),-L$(dir)/lib)
 
-.PHONY: $(BUILD) clean all
+# .PHONY declaration moved earlier in the file
 
 #---------------------------------------------------------------------------------
 all: $(BUILD)
@@ -98,7 +116,7 @@ all: $(BUILD)
 
 $(BUILD):
 	@[ -d $@ ] || mkdir -p $@
-	@$(MAKE) --no-print-directory -C $(BUILD) -f $(CURDIR)/Makefile
+	@make --no-print-directory -C $(BUILD) -f $(CURDIR)/Makefile DEVKITPRO=$(DEVKITPRO) DEVKITARM=$(DEVKITARM) LIBNDS=$(LIBNDS)
 
 #---------------------------------------------------------------------------------
 clean:
@@ -141,24 +159,26 @@ $(OUTPUT).elf: $(OFILES)
 #---------------------------------------------------------------------------------
 %.o: %.cpp
 	@echo "Compiling $(notdir $<)..."
-	@$(CXX) -MMD -MP -MF $(DEPSDIR)/$*.d $(CXXFLAGS) $(INCLUDE) -c $< -o $@
+	@$(CXX) -MMD -MP -MF $(DEPSDIR)/$*.d $(_EXTRADEFS) $(CXXFLAGS) $(INCLUDE) -c $< -o $@
 
 #---------------------------------------------------------------------------------
 %.o: %.c
 	@echo "Compiling $(notdir $<)..."
-	@$(CC) -MMD -MP -MF $(DEPSDIR)/$*.d $(CFLAGS) $(INCLUDE) -c $< -o $@
+	@$(CC) -MMD -MP -MF $(DEPSDIR)/$*.d $(_EXTRADEFS) $(CFLAGS) $(INCLUDE) -c $< -o $@
 
 #---------------------------------------------------------------------------------
 %.o: %.s
 	@echo "Assembling $(notdir $<)..."
-	@$(CC) -MMD -MP -MF $(DEPSDIR)/$*.d -x assembler-with-cpp $(ASFLAGS) -c $< -o $@
+	@$(CC) -MMD -MP -MF $(DEPSDIR)/$*.d -x assembler-with-cpp $(_EXTRADEFS) $(ASFLAGS) -c $< -o $@
 
 #---------------------------------------------------------------------------------
 # Binary data embedding
 #---------------------------------------------------------------------------------
-%.bin.o %_bin.h: %.bin
+%.bin.o: %.bin
 	@echo "Embedding binary data: $(notdir $<)"
-	@bin2s $< | $(AS) -o $(@:.h=.o)
+	@bin2s $< | $(AS) -o $@
+
+%_bin.h: %.bin
 	@echo "extern const u8" `(echo $(<F) | sed -e 's/^\([0-9]\)/_\1/' | tr . _)`"_end[];" > $@
 	@echo "extern const u8" `(echo $(<F) | sed -e 's/^\([0-9]\)/_\1/' | tr . _)`"[];" >> $@
 	@echo "extern const u32" `(echo $(<F) | sed -e 's/^\([0-9]\)/_\1/' | tr . _)`_size";" >> $@
