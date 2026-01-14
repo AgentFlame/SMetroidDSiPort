@@ -1,0 +1,49 @@
+# Build artifacts
+*.o
+*.elf
+*.nds
+*.arm9
+*.arm7
+build/
+*.d
+
+# devkitARM
+*.map
+*.lst
+
+# Asset processing intermediates
+*.tmp
+*.cache
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+venv/
+env/
+*.egg-info/
+
+# ROM files (don't commit proprietary ROMs)
+*.smc
+*.sfc
+*.fig
+*.mgd
+
+# Debug and testing
+*.log
+test_output/
+dumps/
+
+# OS files
+Thumbs.db
+.directory
