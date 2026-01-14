@@ -1,17 +1,14 @@
 #---------------------------------------------------------------------------------
+# Super Metroid DSi Port - Makefile
+#---------------------------------------------------------------------------------
 .SUFFIXES:
 #---------------------------------------------------------------------------------
 
-export PATH := /c/devkitPro/devkitARM/bin:/c/devkitPro/tools/bin:$(PATH)
-
 ifeq ($(strip $(DEVKITARM)),)
-$(error "Please set DEVKITARM in your environment. export DEVKITARM=<path to>devkitARM")
+$(error "DEVKITARM not set. Please run ./build.sh which sets the environment properly")
 endif
 
 include $(DEVKITARM)/ds_rules
-
-# Override LD to use gcc as the linker driver
-LD = $(DEVKITARM)/bin/arm-none-eabi-gcc.exe
 
 #---------------------------------------------------------------------------------
 # TARGET is the name of the output
@@ -22,28 +19,11 @@ LD = $(DEVKITARM)/bin/arm-none-eabi-gcc.exe
 # GRAPHICS is a list of directories containing files to be processed by grit
 #---------------------------------------------------------------------------------
 TARGET    := SuperMetroidDSi
-OUTPUT    := $(TARGET)
 BUILD     := build
-SOURCES   := src
+SOURCES   := src src/game src/input
 INCLUDES  := include
 DATA      := data
 GRAPHICS  :=
-GRAPHICS  :=
-
-CFILES    := $(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.c)))
-CPPFILES  := $(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.cpp)))
-SFILES    := $(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.s)))
-DATAFiles := $(foreach dir,$(DATA),$(notdir $(wildcard $(dir)/*.bin)))
-
-OFILES := $(patsubst %,$(BUILD)/%,$(CFILES:.c=.o) $(CPPFILES:.cpp=.o) $(SFILES:.s=.o) $(DATAFiles:.bin=.o))
-
-INCLUDE := $(foreach dir,$(INCLUDES),-I$(dir)) \
-           $(foreach dir,$(LIBDIRS),-I$(dir)/include) \
-           -I$(BUILD)
-
-LIBPATHS := $(foreach dir,$(LIBDIRS),-L$(dir)/lib)
-
-VPATH  := $(foreach dir,$(SOURCES),$(dir)) $(foreach dir,$(DATA),$(dir))
 
 #---------------------------------------------------------------------------------
 # options for code generation
@@ -53,13 +33,13 @@ ARCH := -marm -mthumb-interwork -march=armv5te -mtune=arm946e-s
 CFLAGS   := -g -Wall -O2 \
             $(ARCH) $(INCLUDE) -DARM9
 CXXFLAGS := $(CFLAGS) -fno-rtti -fno-exceptions
-ASFLAGS  := -g
-LDFLAGS  = -specs=ds_arm9.specs -g -Wl,-Map,$(notdir $*.map)
+ASFLAGS  := -g $(ARCH)
+LDFLAGS  = -specs=ds_arm9.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map)
 
 #---------------------------------------------------------------------------------
-# any extra libraries we wish to link with the project
+# any extra libraries we wish to link with the project (order matters!)
 #---------------------------------------------------------------------------------
-LIBS := -lnds9
+LIBS := -lfat -lnds9
 
 #---------------------------------------------------------------------------------
 # list of directories containing libraries, this must be the top level containing
@@ -71,71 +51,120 @@ LIBDIRS := $(LIBNDS)
 # no real need to edit anything past this point unless you need to add additional
 # rules for different file extensions
 #---------------------------------------------------------------------------------
-.PHONY: all build clean
+ifneq ($(BUILD),$(notdir $(CURDIR)))
+#---------------------------------------------------------------------------------
+
+export OUTPUT := $(CURDIR)/$(TARGET)
+export TOPDIR := $(CURDIR)
+
+export VPATH := $(foreach dir,$(SOURCES),$(CURDIR)/$(dir)) \
+                $(foreach dir,$(DATA),$(CURDIR)/$(dir)) \
+                $(foreach dir,$(GRAPHICS),$(CURDIR)/$(dir))
+
+export DEPSDIR := $(CURDIR)/$(BUILD)
+
+# Automatically find all source files in SOURCES directories
+CFILES    := $(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.c)))
+CPPFILES  := $(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.cpp)))
+SFILES    := $(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.s)))
+BINFILES  := $(foreach dir,$(DATA),$(notdir $(wildcard $(dir)/*.*)))
+
+#---------------------------------------------------------------------------------
+# use CXX for linking C++ projects, CC for standard C
+#---------------------------------------------------------------------------------
+ifeq ($(strip $(CPPFILES)),)
+	export LD := $(CC)
+else
+	export LD := $(CXX)
+endif
+#---------------------------------------------------------------------------------
+
+export OFILES_BIN := $(addsuffix .o,$(BINFILES))
+export OFILES_SRC := $(CPPFILES:.cpp=.o) $(CFILES:.c=.o) $(SFILES:.s=.o)
+export OFILES := $(OFILES_BIN) $(OFILES_SRC)
+export HFILES := $(addsuffix .h,$(subst .,_,$(BINFILES)))
+
+export INCLUDE := $(foreach dir,$(INCLUDES),-I$(CURDIR)/$(dir)) \
+                  $(foreach dir,$(LIBDIRS),-I$(dir)/include) \
+                  -I$(CURDIR)/$(BUILD)
+
+export LIBPATHS := $(foreach dir,$(LIBDIRS),-L$(dir)/lib)
+
+.PHONY: $(BUILD) clean all
+
+#---------------------------------------------------------------------------------
+all: $(BUILD)
+	@echo "Build complete! Output: $(TARGET).nds"
+
+$(BUILD):
+	@[ -d $@ ] || mkdir -p $@
+	@$(MAKE) --no-print-directory -C $(BUILD) -f $(CURDIR)/Makefile
+
+#---------------------------------------------------------------------------------
+clean:
+	@echo "Cleaning build artifacts..."
+	@rm -fr $(BUILD) $(TARGET).elf $(TARGET).nds $(TARGET).arm9
+	@echo "Clean complete!"
+
+#---------------------------------------------------------------------------------
+else
+
+DEPENDS := $(OFILES:.o=.d)
 
 #---------------------------------------------------------------------------------
 # main targets
 #---------------------------------------------------------------------------------
-
-all: $(OUTPUT).nds
-
-build:
-	@mkdir -p $(BUILD)
-
-$(BUILD)/%.o: %.c
-	@echo $(notdir $<)
-	$(CC) -c $(CFLAGS) $< -o $@
-
-$(BUILD)/%.o: %.s
-	@echo $(notdir $<)
-	$(AS) $(ASFLAGS) $< -o $@
-
-$(BUILD)/%.o: %.cpp
-	@echo $(notdir $<)
-	$(CXX) -c $(CXXFLAGS) $< -o $@
-
-$(BUILD)/converted_tiles_bin.o: data/converted_tiles.bin
-	@echo $(notdir $<)
-	@bin2s $< > $(BUILD)/converted_tiles_bin.s
-	$(AS) $(ASFLAGS) -o $@ $(BUILD)/converted_tiles_bin.s
-
-$(BUILD)/converted_tiles_bin.h: $(BUILD)/converted_tiles_bin.o
-	@echo "extern const u8 converted_tiles_bin[];" > $@
-	@echo "extern const u32 converted_tiles_bin_size;" >> $@
-
-$(BUILD)/main.o: $(BUILD)/converted_tiles_bin.h
-
+$(OUTPUT).nds: $(OUTPUT).arm9
+$(OUTPUT).arm9: $(OUTPUT).elf
 $(OUTPUT).elf: $(OFILES)
-	@echo linking $(notdir $@)
-	$(LD) $(OFILES) $(LIBPATHS) $(LIBS) -o $@
 
-$(OUTPUT).nds: $(OUTPUT).elf
-	@echo building $(notdir $@)
+#---------------------------------------------------------------------------------
+%.nds: %.arm9
+	@echo "Creating .nds file: $(notdir $@)"
 	ndstool -c $@ -9 $<
+	@echo "Build successful!"
 
 #---------------------------------------------------------------------------------
-# clean:
-# 	@echo clean ...
-# 	@rm -fr $(BUILD) $(TARGET).elf $(TARGET).nds
-#
-# #---------------------------------------------------------------------------------
-# else
+%.arm9: %.elf
+	@echo "Creating ARM9 binary: $(notdir $@)"
+	@$(OBJCOPY) -O binary $< $@
 
-# DEPENDS := $(OFILES:.o=.d)
+#---------------------------------------------------------------------------------
+%.elf:
+	@echo "Linking $(notdir $@)..."
+	@$(LD) $(LDFLAGS) $(OFILES) $(LIBPATHS) $(LIBS) -o $@
 
-# #---------------------------------------------------------------------------------
-# # main targets
-# #---------------------------------------------------------------------------------
-# $(OUTPUT).nds: $(OUTPUT).elf
-# $(OUTPUT).elf: $(OFILES)
-
-# #---------------------------------------------------------------------------------
-# %.nds: %.elf
-# 	ndstool -c $@ -9 $<
-
-# -include $(DEPENDS)
-
-# #---------------------------------------------------------------------------------
-# endif
+#---------------------------------------------------------------------------------
+# Compile Targets for C/C++
 #---------------------------------------------------------------------------------
 
+#---------------------------------------------------------------------------------
+%.o: %.cpp
+	@echo "Compiling $(notdir $<)..."
+	@$(CXX) -MMD -MP -MF $(DEPSDIR)/$*.d $(CXXFLAGS) $(INCLUDE) -c $< -o $@
+
+#---------------------------------------------------------------------------------
+%.o: %.c
+	@echo "Compiling $(notdir $<)..."
+	@$(CC) -MMD -MP -MF $(DEPSDIR)/$*.d $(CFLAGS) $(INCLUDE) -c $< -o $@
+
+#---------------------------------------------------------------------------------
+%.o: %.s
+	@echo "Assembling $(notdir $<)..."
+	@$(CC) -MMD -MP -MF $(DEPSDIR)/$*.d -x assembler-with-cpp $(ASFLAGS) -c $< -o $@
+
+#---------------------------------------------------------------------------------
+# Binary data embedding
+#---------------------------------------------------------------------------------
+%.bin.o %_bin.h: %.bin
+	@echo "Embedding binary data: $(notdir $<)"
+	@bin2s $< | $(AS) -o $(@:.h=.o)
+	@echo "extern const u8" `(echo $(<F) | sed -e 's/^\([0-9]\)/_\1/' | tr . _)`"_end[];" > $@
+	@echo "extern const u8" `(echo $(<F) | sed -e 's/^\([0-9]\)/_\1/' | tr . _)`"[];" >> $@
+	@echo "extern const u32" `(echo $(<F) | sed -e 's/^\([0-9]\)/_\1/' | tr . _)`_size";" >> $@
+
+-include $(DEPENDS)
+
+#---------------------------------------------------------------------------------
+endif
+#---------------------------------------------------------------------------------
