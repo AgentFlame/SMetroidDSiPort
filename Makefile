@@ -8,16 +8,11 @@
 DEVKITPRO ?= /c/devkitPro
 DEVKITARM ?= $(DEVKITPRO)/devkitARM
 LIBNDS ?= $(DEVKITPRO)/libnds
+CALICO := $(DEVKITPRO)/calico
 
 ifeq ($(strip $(DEVKITARM)),)
 $(error "DEVKITARM not set. Please run ./build.sh which sets the environment properly")
 endif
-
-.PHONY: all clean build
-
-# Define the extra defines that would normally come from ds_rules
-CALICO := $(DEVKITPRO)/calico
-_EXTRADEFS := -D__NDS__ -I$(CALICO)/include
 
 # ARM Toolchain
 PREFIX  := arm-none-eabi-
@@ -34,22 +29,27 @@ AR      := $(PREFIX)ar
 # SOURCES is a list of directories containing source code
 # INCLUDES is a list of directories containing extra header files
 # DATA is a list of directories containing binary data
-# GRAPHICS is a list of directories containing files to be processed by grit
 #---------------------------------------------------------------------------------
 TARGET    := SuperMetroidDSi
 BUILD     := build
 SOURCES   := src src/game src/input
 INCLUDES  := include
 DATA      := data
-GRAPHICS  :=
+
+#---------------------------------------------------------------------------------
+# Game metadata (shown in ROM header)
+#---------------------------------------------------------------------------------
+GAME_TITLE     := Super Metroid DSi
+GAME_SUBTITLE1 := Port by Infernal
+GAME_SUBTITLE2 := Built with devkitARM
 
 #---------------------------------------------------------------------------------
 # options for code generation
 #---------------------------------------------------------------------------------
-ARCH := -marm -mthumb-interwork -march=armv5te -mtune=arm946e-s
+ARCH := -march=armv5te -mtune=arm946e-s
 
-CFLAGS   := -g -Wall -O2 \
-            $(ARCH) $(INCLUDE) -DARM9 -DARM_INTERWORK
+CFLAGS   := -g -Wall -O2 -ffunction-sections -fdata-sections \
+            $(ARCH) $(INCLUDE) -DARM9 -D__NDS__ -I$(CALICO)/include
 CXXFLAGS := $(CFLAGS) -fno-rtti -fno-exceptions
 ASFLAGS  := -g $(ARCH) -DARM9
 LDFLAGS  = -specs=$(CALICO)/share/ds9.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map)
@@ -60,10 +60,15 @@ LDFLAGS  = -specs=$(CALICO)/share/ds9.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map)
 LIBS := -lcalico_ds9 -lfat -lnds9
 
 #---------------------------------------------------------------------------------
-# list of directories containing libraries, this must be the top level containing
-# include and lib
+# list of directories containing libraries
 #---------------------------------------------------------------------------------
 LIBDIRS := $(CALICO) $(LIBNDS)
+
+#---------------------------------------------------------------------------------
+# ARM7 binary and icon for .nds creation
+#---------------------------------------------------------------------------------
+ARM7_ELF := $(CALICO)/bin/ds7_maine.elf
+NDS_ICON := $(CALICO)/share/nds-icon.bmp
 
 #---------------------------------------------------------------------------------
 # no real need to edit anything past this point unless you need to add additional
@@ -76,8 +81,7 @@ export OUTPUT := $(CURDIR)/$(TARGET)
 export TOPDIR := $(CURDIR)
 
 export VPATH := $(foreach dir,$(SOURCES),$(CURDIR)/$(dir)) \
-                $(foreach dir,$(DATA),$(CURDIR)/$(dir)) \
-                $(foreach dir,$(GRAPHICS),$(CURDIR)/$(dir))
+                $(foreach dir,$(DATA),$(CURDIR)/$(dir))
 
 export DEPSDIR := $(CURDIR)/$(BUILD)
 
@@ -104,19 +108,16 @@ export HFILES := $(addsuffix .h,$(subst .,_,$(BINFILES)))
 
 export INCLUDE := $(foreach dir,$(INCLUDES),-I$(CURDIR)/$(dir)) \
                   $(foreach dir,$(LIBDIRS),-I$(dir)/include) \
-                  -I$(CURDIR)/$(BUILD)
+                  -I$(CURDIR)/$(BUILD) -I$(CALICO)/include
 
 export LIBPATHS := $(foreach dir,$(LIBDIRS),-L$(dir)/lib)
 
-# .PHONY declaration moved earlier in the file
+.PHONY: $(BUILD) clean
 
 #---------------------------------------------------------------------------------
-all: $(BUILD)
-	@echo "Build complete! Output: $(TARGET).nds"
-
 $(BUILD):
 	@[ -d $@ ] || mkdir -p $@
-	@make --no-print-directory -C $(BUILD) -f $(CURDIR)/Makefile DEVKITPRO=$(DEVKITPRO) DEVKITARM=$(DEVKITARM) LIBNDS=$(LIBNDS)
+	@make --no-print-directory -C $(BUILD) -f $(CURDIR)/Makefile
 
 #---------------------------------------------------------------------------------
 clean:
@@ -137,9 +138,11 @@ $(OUTPUT).arm9: $(OUTPUT).elf
 $(OUTPUT).elf: $(OFILES)
 
 #---------------------------------------------------------------------------------
+# Build .nds file with ARM7 binary and game metadata
+#---------------------------------------------------------------------------------
 %.nds: %.arm9
-	@echo "Creating .nds file: $(notdir $@)"
-	ndstool -c $@ -9 $<
+	@echo "Creating .nds file with ARM7 binary: $(notdir $@)"
+	@ndstool -c $@ -9 $< -7 $(ARM7_ELF) -b $(NDS_ICON) "$(GAME_TITLE);$(GAME_SUBTITLE1);$(GAME_SUBTITLE2)"
 	@echo "Build successful!"
 
 #---------------------------------------------------------------------------------
@@ -159,17 +162,17 @@ $(OUTPUT).elf: $(OFILES)
 #---------------------------------------------------------------------------------
 %.o: %.cpp
 	@echo "Compiling $(notdir $<)..."
-	@$(CXX) -MMD -MP -MF $(DEPSDIR)/$*.d $(_EXTRADEFS) $(CXXFLAGS) $(INCLUDE) -c $< -o $@
+	@$(CXX) -MMD -MP -MF $(DEPSDIR)/$*.d $(CXXFLAGS) -c $< -o $@
 
 #---------------------------------------------------------------------------------
 %.o: %.c
 	@echo "Compiling $(notdir $<)..."
-	@$(CC) -MMD -MP -MF $(DEPSDIR)/$*.d $(_EXTRADEFS) $(CFLAGS) $(INCLUDE) -c $< -o $@
+	@$(CC) -MMD -MP -MF $(DEPSDIR)/$*.d $(CFLAGS) -c $< -o $@
 
 #---------------------------------------------------------------------------------
 %.o: %.s
 	@echo "Assembling $(notdir $<)..."
-	@$(CC) -MMD -MP -MF $(DEPSDIR)/$*.d -x assembler-with-cpp $(_EXTRADEFS) $(ASFLAGS) -c $< -o $@
+	@$(CC) -MMD -MP -MF $(DEPSDIR)/$*.d -x assembler-with-cpp $(ASFLAGS) -c $< -o $@
 
 #---------------------------------------------------------------------------------
 # Binary data embedding

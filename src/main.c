@@ -1,76 +1,42 @@
 /*
- * Super Metroid DSi Port - Main Entry Point
+ * Super Metroid DSi Port - Demo
  *
- * Initializes all systems and runs the main game loop.
- * Target: Nintendo DSi (ARM9 @ 133 MHz, 16MB RAM)
+ * Test harness to verify build system and basic functionality.
+ * This replaces the full game initialization temporarily.
  */
 
 #include <nds.h>
-#include "game_state.h"
-#include "input.h"
-#include "graphics.h"
-#include "audio.h"
-#include "physics.h"
-#include "save.h"
-#include "player.h"
-#include "enemies.h"
-#include "room.h"
+#include <stdio.h>
 
-/*
- * Main entry point
- */
 int main(void) {
-    // 1. Hardware initialization
-    powerOn(POWER_ALL_2D);
-    videoSetMode(MODE_5_2D);
-    videoSetModeSub(MODE_0_2D);
+    // Initialize console (handles all hardware setup automatically)
+    consoleDemoInit();
 
-    vramSetBankA(VRAM_A_MAIN_BG);
-    vramSetBankC(VRAM_C_SUB_BG);
+    // Print welcome messages
+    printf("Super Metroid DSi Port\n");
+    printf("======================\n\n");
+    printf("Build successful!\n");
+    printf("Console initialized and working.\n\n");
 
-    // 2. Core systems (no dependencies)
-    input_init();
-    // graphics_init();  // TODO: Uncomment when graphics system is implemented
-    // audio_init();     // TODO: Uncomment when audio system is implemented
-
-    // 3. Game systems (depend on core)
-    // physics_init();   // TODO: Uncomment when physics system is implemented
-    save_init();
-
-    // 4. Gameplay systems (depend on game systems)
-    // player_init();    // TODO: Uncomment when player system is implemented
-    // enemies_init();   // TODO: Uncomment when enemy system is implemented
-    // room_init();      // TODO: Uncomment when room system is implemented
-
-    // 5. State manager (depends on everything)
-    game_state_init();
-    game_state_set(STATE_TITLE);
-
-    // 6. Main game loop (60 FPS)
-    while (1) {
+    // Demo loop - just print Hello World periodically
+    int frame_counter = 0;
+    while(1) {
         // Wait for vertical blank (16.67ms frame budget)
         swiWaitForVBlank();
 
-        // Update input state
-        input_update();
+        frame_counter++;
 
-        // Update current game state
-        game_state_update();
+        // Print "Hello World!" every 60 frames (approximately 1 second)
+        if (frame_counter % 60 == 0) {
+            printf("Hello World! (Frame: %d)\n", frame_counter);
+        }
 
-        // Update audio
-        // audio_update();  // TODO: Uncomment when audio system is implemented
-
-        // Render current game state
-        game_state_render();
-
-        // Swap framebuffers
-        // graphics_vsync();  // TODO: Uncomment when graphics system is implemented
+        // Run for 300 frames then exit (5 seconds)
+        if (frame_counter >= 300) {
+            printf("\nDemo complete. Exiting...\n");
+            break;
+        }
     }
-
-    // Cleanup (never reached, but good practice)
-    game_state_shutdown();
-    input_shutdown();
-    save_shutdown();
 
     return 0;
 }
