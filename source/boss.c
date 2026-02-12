@@ -11,6 +11,10 @@
  *   Kraid        - 1000 HP, mouth-only vulnerability, fingernails, belly spikes
  *   Botwoon      - 3000 HP, emerge/spit from holes, serpentine snake phase
  *   Phantoon     - 2500 HP, visibility cycle, flame attacks, super missile rage
+ *   Draygon      - 6000 HP, swim/swoop/grab, gunk spit
+ *   Golden Torizo- 8000 HP, catches super missiles, energy balls, lunge
+ *   Ridley       - 18000 HP, aggression scales with HP, 4 attack types
+ *   Mother Brain - 3 phases (3000/18000/36000 HP), phase transitions on death
  *
  * Boss-specific param usage:
  *   Spore Spawn:
@@ -1240,6 +1244,802 @@ static void phantoon_update(void) {
 }
 
 /* ========================================================================
+ * Draygon AI
+ *
+ * 6000 HP aquatic boss. Swims back and forth, swoops to grab Samus,
+ * spits gunk. Can be killed by grapple + turret (instant kill path).
+ *
+ * Behavior:
+ *   1. SWIM:     Patrol left/right across room
+ *   2. SWOOP:    Dive toward player
+ *   3. GRAB:     Holding Samus (drains HP per frame)
+ *   4. SPIT:     Spit gunk projectiles
+ *   5. RETREAT:  Return to patrol altitude
+ *   6. DEATH:    Collapse
+ *
+ * Boss-specific param usage:
+ *   param_a     = swim direction (positive = right, negative = left)
+ *   param_b     = grab timer (frames holding Samus)
+ *   anchor_x    = patrol center X
+ *   anchor_y    = patrol altitude Y
+ *   sub_timer   = attacks this patrol
+ *   attack_count = total swoops
+ * ======================================================================== */
+
+enum {
+    DY_SWIM = 0,
+    DY_SWOOP,
+    DY_GRAB,
+    DY_SPIT,
+    DY_RETREAT,
+    DY_DEATH
+};
+
+#define DY_HP                  6000
+#define DY_CONTACT_DAMAGE      40
+#define DY_HITBOX_HALF_W       INT_TO_FX(18)
+#define DY_HITBOX_HALF_H       INT_TO_FX(14)
+#define DY_SWIM_SPEED          INT_TO_FX(1)
+#define DY_SWIM_RANGE          INT_TO_FX(80)   /* Distance from center */
+#define DY_SWIM_ATTACK_EVERY   120              /* Frames between attacks */
+#define DY_SWOOP_SPEED         INT_TO_FX(3)
+#define DY_SWOOP_FRAMES        25
+#define DY_GRAB_FRAMES         90               /* How long Draygon holds */
+#define DY_GRAB_DAMAGE         2                /* HP drain per frame */
+#define DY_SPIT_FRAMES         30
+#define DY_SPIT_SPEED          INT_TO_FX(2)
+#define DY_RETREAT_SPEED       INT_TO_FX(2)
+#define DY_DEATH_FRAMES        90
+
+static void draygon_init(void) {
+    g_boss.hp = DY_HP;
+    g_boss.hp_max = DY_HP;
+    g_boss.damage_contact = DY_CONTACT_DAMAGE;
+    g_boss.body.hitbox.half_w = DY_HITBOX_HALF_W;
+    g_boss.body.hitbox.half_h = DY_HITBOX_HALF_H;
+    g_boss.vulnerable = true;
+    g_boss.ai_state = DY_SWIM;
+    g_boss.ai_timer = 0;
+    g_boss.param_a = FX_ONE; /* Start swimming right */
+    g_boss.param_b = 0;
+    g_boss.sub_timer = 0;
+    g_boss.attack_count = 0;
+
+    g_boss.anchor_x = g_boss.body.pos.x;
+    g_boss.anchor_y = g_boss.body.pos.y;
+}
+
+static void draygon_update(void) {
+    Boss* b = &g_boss;
+
+    if (b->invuln_timer > 0) b->invuln_timer--;
+
+    switch (b->ai_state) {
+        case DY_SWIM: {
+            /* Patrol left/right */
+            if (b->param_a > 0) {
+                b->body.pos.x += DY_SWIM_SPEED;
+                if (b->body.pos.x > b->anchor_x + DY_SWIM_RANGE) {
+                    b->param_a = -FX_ONE;
+                }
+            } else {
+                b->body.pos.x -= DY_SWIM_SPEED;
+                if (b->body.pos.x < b->anchor_x - DY_SWIM_RANGE) {
+                    b->param_a = FX_ONE;
+                }
+            }
+
+            b->ai_timer++;
+            if (b->ai_timer >= DY_SWIM_ATTACK_EVERY) {
+                b->ai_timer = 0;
+                /* Alternate swoop and spit */
+                if ((b->sub_timer & 1) == 0) {
+                    b->ai_state = DY_SWOOP;
+                } else {
+                    b->ai_state = DY_SPIT;
+                }
+                b->sub_timer++;
+            }
+            break;
+        }
+
+        case DY_SWOOP: {
+            /* Dive toward player */
+            fx32 dx = g_player.body.pos.x - b->body.pos.x;
+            fx32 dy = g_player.body.pos.y - b->body.pos.y;
+            if (dx > 0) b->body.pos.x += DY_SWOOP_SPEED;
+            else if (dx < 0) b->body.pos.x -= DY_SWOOP_SPEED;
+            if (dy > 0) b->body.pos.y += DY_SWOOP_SPEED;
+            else if (dy < 0) b->body.pos.y -= DY_SWOOP_SPEED;
+
+            /* Check if close enough to grab */
+            fx32 adx = dx < 0 ? -dx : dx;
+            fx32 ady = dy < 0 ? -dy : dy;
+            if (adx < INT_TO_FX(16) && ady < INT_TO_FX(16)) {
+                b->ai_state = DY_GRAB;
+                b->ai_timer = 0;
+                b->param_b = 0;
+                b->attack_count++;
+                break;
+            }
+
+            b->ai_timer++;
+            if (b->ai_timer >= DY_SWOOP_FRAMES) {
+                b->ai_state = DY_RETREAT;
+                b->ai_timer = 0;
+            }
+            break;
+        }
+
+        case DY_GRAB: {
+            /* Hold Samus, drain HP */
+            b->param_b += FX_ONE;
+            if (FX_TO_INT(b->param_b) < DY_GRAB_FRAMES) {
+                /* Drain player HP every 15 frames */
+                if ((FX_TO_INT(b->param_b) % 15) == 0) {
+                    player_damage(DY_GRAB_DAMAGE);
+                }
+            } else {
+                /* Release */
+                b->ai_state = DY_RETREAT;
+                b->ai_timer = 0;
+            }
+            break;
+        }
+
+        case DY_SPIT: {
+            if (b->ai_timer == 0) {
+                fx32 dx = g_player.body.pos.x - b->body.pos.x;
+                fx32 vx = (dx > 0) ? DY_SPIT_SPEED : -DY_SPIT_SPEED;
+                projectile_spawn(PROJ_ENEMY_BULLET, PROJ_OWNER_ENEMY,
+                                b->body.pos.x, b->body.pos.y,
+                                vx, DY_SPIT_SPEED >> 1);
+                projectile_spawn(PROJ_ENEMY_BULLET, PROJ_OWNER_ENEMY,
+                                b->body.pos.x, b->body.pos.y,
+                                vx, -(DY_SPIT_SPEED >> 1));
+            }
+
+            b->ai_timer++;
+            if (b->ai_timer >= DY_SPIT_FRAMES) {
+                b->ai_state = DY_SWIM;
+                b->ai_timer = 0;
+            }
+            break;
+        }
+
+        case DY_RETREAT: {
+            /* Return to patrol altitude */
+            fx32 dy = b->anchor_y - b->body.pos.y;
+            if (dy > INT_TO_FX(2)) {
+                b->body.pos.y += DY_RETREAT_SPEED;
+            } else if (dy < -INT_TO_FX(2)) {
+                b->body.pos.y -= DY_RETREAT_SPEED;
+            } else {
+                b->body.pos.y = b->anchor_y;
+                b->ai_state = DY_SWIM;
+                b->ai_timer = 0;
+            }
+            break;
+        }
+
+        case DY_DEATH: {
+            b->body.pos.y += FX_ONE; /* Sink */
+            b->ai_timer++;
+            if (b->ai_timer >= DY_DEATH_FRAMES) {
+                b->active = false;
+            }
+            break;
+        }
+    }
+
+    /* Contact damage (not during death) */
+    if (b->active && b->ai_state != DY_DEATH) {
+        if (boss_aabb_overlap(b->body.pos, b->body.hitbox,
+                              g_player.body.pos, g_player.body.hitbox)) {
+            player_damage(b->damage_contact);
+        }
+    }
+}
+
+/* ========================================================================
+ * Golden Torizo AI
+ *
+ * 8000 HP enhanced Torizo. Same base pattern as Bomb Torizo but faster,
+ * can catch super missiles and throw them back. Two attack types:
+ * energy balls and lunges.
+ *
+ * Special: If hit by super missile, catches it and throws it back.
+ * param_b tracks "catch" state.
+ * ======================================================================== */
+
+enum {
+    GT_IDLE = 0,
+    GT_ATTACK_ENERGY,
+    GT_ATTACK_LUNGE,
+    GT_CATCH,       /* Caught a super missile */
+    GT_THROW_BACK,  /* Throw caught projectile */
+    GT_FLINCH,
+    GT_DEATH
+};
+
+#define GT_HP                  8000
+#define GT_CONTACT_DAMAGE      50
+#define GT_HITBOX_HALF_W       INT_TO_FX(14)
+#define GT_HITBOX_HALF_H       INT_TO_FX(22)
+#define GT_IDLE_MIN            20
+#define GT_IDLE_RANGE          40
+#define GT_ENERGY_VX           INT_TO_FX(3)
+#define GT_ENERGY_VY           (-INT_TO_FX(2))
+#define GT_ENERGY_FRAMES       25
+#define GT_LUNGE_SPEED         INT_TO_FX(3)
+#define GT_LUNGE_FRAMES        18
+#define GT_CATCH_FRAMES        20
+#define GT_THROW_SPEED         INT_TO_FX(4)
+#define GT_THROW_FRAMES        15
+#define GT_FLINCH_FRAMES       8
+#define GT_DEATH_FRAMES        60
+#define GT_LUNGE_EVERY         2
+
+static void golden_torizo_init(void) {
+    g_boss.hp = GT_HP;
+    g_boss.hp_max = GT_HP;
+    g_boss.damage_contact = GT_CONTACT_DAMAGE;
+    g_boss.body.hitbox.half_w = GT_HITBOX_HALF_W;
+    g_boss.body.hitbox.half_h = GT_HITBOX_HALF_H;
+    g_boss.vulnerable = true;
+    g_boss.ai_state = GT_IDLE;
+    g_boss.ai_timer = 0;
+    g_boss.ai_counter = 0;
+    g_boss.sub_timer = GT_IDLE_MIN;
+    g_boss.attack_count = 0;
+    g_boss.param_a = g_boss.body.pos.x;
+    g_boss.param_b = 0;
+}
+
+static void golden_torizo_update(void) {
+    Boss* b = &g_boss;
+
+    if (b->invuln_timer > 0) b->invuln_timer--;
+
+    switch (b->ai_state) {
+        case GT_IDLE: {
+            b->ai_timer++;
+            if (b->ai_timer >= b->sub_timer) {
+                if (b->attack_count >= GT_LUNGE_EVERY) {
+                    b->ai_state = GT_ATTACK_LUNGE;
+                    b->attack_count = 0;
+                } else {
+                    b->ai_state = GT_ATTACK_ENERGY;
+                }
+                b->ai_timer = 0;
+            }
+            break;
+        }
+
+        case GT_ATTACK_ENERGY: {
+            if (b->ai_timer == 0) {
+                fx32 dx = g_player.body.pos.x - b->body.pos.x;
+                fx32 vx = (dx > 0) ? GT_ENERGY_VX : -GT_ENERGY_VX;
+                projectile_spawn(PROJ_ENEMY_BULLET, PROJ_OWNER_ENEMY,
+                                b->body.pos.x, b->body.pos.y - INT_TO_FX(8),
+                                vx, GT_ENERGY_VY);
+                b->attack_count++;
+                b->ai_counter++;
+            }
+
+            b->ai_timer++;
+            if (b->ai_timer >= GT_ENERGY_FRAMES) {
+                b->ai_state = GT_IDLE;
+                b->ai_timer = 0;
+                b->sub_timer = GT_IDLE_MIN + (b->ai_counter % GT_IDLE_RANGE);
+            }
+            break;
+        }
+
+        case GT_ATTACK_LUNGE: {
+            fx32 dx = g_player.body.pos.x - b->body.pos.x;
+            if (dx < 0) b->body.pos.x -= GT_LUNGE_SPEED;
+            else b->body.pos.x += GT_LUNGE_SPEED;
+
+            b->ai_timer++;
+            if (b->ai_timer >= GT_LUNGE_FRAMES) {
+                b->ai_state = GT_IDLE;
+                b->ai_timer = 0;
+                b->ai_counter++;
+                b->sub_timer = GT_IDLE_MIN + (b->ai_counter % GT_IDLE_RANGE);
+            }
+            break;
+        }
+
+        case GT_CATCH: {
+            /* Brief pause after catching */
+            b->ai_timer++;
+            if (b->ai_timer >= GT_CATCH_FRAMES) {
+                b->ai_state = GT_THROW_BACK;
+                b->ai_timer = 0;
+            }
+            break;
+        }
+
+        case GT_THROW_BACK: {
+            /* Throw projectile back at player */
+            if (b->ai_timer == 0) {
+                fx32 dx = g_player.body.pos.x - b->body.pos.x;
+                fx32 vx = (dx > 0) ? GT_THROW_SPEED : -GT_THROW_SPEED;
+                projectile_spawn(PROJ_ENEMY_BULLET, PROJ_OWNER_ENEMY,
+                                b->body.pos.x, b->body.pos.y, vx, 0);
+            }
+
+            b->ai_timer++;
+            if (b->ai_timer >= GT_THROW_FRAMES) {
+                b->ai_state = GT_IDLE;
+                b->ai_timer = 0;
+                b->param_b = 0;
+                b->sub_timer = GT_IDLE_MIN;
+            }
+            break;
+        }
+
+        case GT_FLINCH: {
+            b->ai_timer++;
+            if (b->ai_timer >= GT_FLINCH_FRAMES) {
+                b->ai_state = GT_IDLE;
+                b->ai_timer = 0;
+                b->sub_timer = GT_IDLE_MIN + (b->ai_counter % GT_IDLE_RANGE);
+            }
+            break;
+        }
+
+        case GT_DEATH: {
+            b->ai_timer++;
+            if (b->ai_timer >= GT_DEATH_FRAMES) {
+                b->active = false;
+            }
+            break;
+        }
+    }
+
+    if (b->active && b->ai_state != GT_DEATH) {
+        if (boss_aabb_overlap(b->body.pos, b->body.hitbox,
+                              g_player.body.pos, g_player.body.hitbox)) {
+            player_damage(b->damage_contact);
+        }
+    }
+}
+
+/* ========================================================================
+ * Ridley AI
+ *
+ * 18000 HP. Most aggressive boss. Flies around room, attacks with
+ * tail swipe, fireballs, grab, and pogo. Aggression scales with HP
+ * (attacks faster at lower HP).
+ *
+ * Behavior:
+ *   1. FLY:       Patrol around room
+ *   2. TAIL:      Tail swipe (contact damage)
+ *   3. FIREBALL:  Fire 1-3 fireballs at player
+ *   4. GRAB:      Grab and carry Samus
+ *   5. POGO:      Bouncing attack from above
+ *   6. DEATH:     Explosion sequence
+ * ======================================================================== */
+
+enum {
+    RI_FLY = 0,
+    RI_TAIL,
+    RI_FIREBALL,
+    RI_GRAB,
+    RI_POGO,
+    RI_DEATH
+};
+
+#define RI_HP                  18000
+#define RI_CONTACT_DAMAGE      60
+#define RI_HITBOX_HALF_W       INT_TO_FX(16)
+#define RI_HITBOX_HALF_H       INT_TO_FX(18)
+#define RI_FLY_SPEED           INT_TO_FX(2)
+#define RI_FLY_RANGE           INT_TO_FX(70)
+#define RI_ATTACK_INTERVAL     90    /* Base interval (reduced at low HP) */
+#define RI_TAIL_FRAMES         20
+#define RI_FIREBALL_SPEED      INT_TO_FX(3)
+#define RI_FIREBALL_FRAMES     25
+#define RI_GRAB_FRAMES         60
+#define RI_GRAB_DAMAGE         3
+#define RI_POGO_SPEED          INT_TO_FX(4)
+#define RI_POGO_FRAMES         30
+#define RI_DEATH_FRAMES        120
+
+static void ridley_init(void) {
+    g_boss.hp = RI_HP;
+    g_boss.hp_max = RI_HP;
+    g_boss.damage_contact = RI_CONTACT_DAMAGE;
+    g_boss.body.hitbox.half_w = RI_HITBOX_HALF_W;
+    g_boss.body.hitbox.half_h = RI_HITBOX_HALF_H;
+    g_boss.vulnerable = true;
+    g_boss.ai_state = RI_FLY;
+    g_boss.ai_timer = 0;
+    g_boss.ai_counter = 0;
+    g_boss.sub_timer = 0;
+    g_boss.attack_count = 0;
+    g_boss.param_a = FX_ONE; /* fly direction */
+
+    g_boss.anchor_x = g_boss.body.pos.x;
+    g_boss.anchor_y = g_boss.body.pos.y;
+}
+
+/* Aggression factor: attack interval decreases as HP drops */
+static uint16_t ridley_attack_interval(void) {
+    /* At full HP: base interval. At 50% HP: 60% interval. At 25%: 40% */
+    int32_t ratio = (int32_t)g_boss.hp * 100 / g_boss.hp_max;
+    if (ratio > 75) return RI_ATTACK_INTERVAL;
+    if (ratio > 50) return (RI_ATTACK_INTERVAL * 3) / 4;
+    if (ratio > 25) return (RI_ATTACK_INTERVAL * 3) / 5;
+    return RI_ATTACK_INTERVAL / 3;
+}
+
+static void ridley_update(void) {
+    Boss* b = &g_boss;
+
+    if (b->invuln_timer > 0) b->invuln_timer--;
+
+    switch (b->ai_state) {
+        case RI_FLY: {
+            /* Patrol with sine-wave altitude */
+            if (b->param_a > 0) {
+                b->body.pos.x += RI_FLY_SPEED;
+                if (b->body.pos.x > b->anchor_x + RI_FLY_RANGE) {
+                    b->param_a = -FX_ONE;
+                }
+            } else {
+                b->body.pos.x -= RI_FLY_SPEED;
+                if (b->body.pos.x < b->anchor_x - RI_FLY_RANGE) {
+                    b->param_a = FX_ONE;
+                }
+            }
+            /* Slight sine bob */
+            b->sub_timer++;
+            uint8_t bob = (uint8_t)(b->sub_timer * 2);
+            b->body.pos.y = b->anchor_y +
+                            fx_mul(fx_sin(bob), INT_TO_FX(12));
+
+            b->ai_timer++;
+            if (b->ai_timer >= ridley_attack_interval()) {
+                b->ai_timer = 0;
+                /* Pick attack based on counter */
+                int attack = b->ai_counter % 4;
+                switch (attack) {
+                    case 0: b->ai_state = RI_TAIL; break;
+                    case 1: b->ai_state = RI_FIREBALL; break;
+                    case 2: b->ai_state = RI_GRAB; break;
+                    case 3: b->ai_state = RI_POGO; break;
+                }
+                b->ai_counter++;
+            }
+            break;
+        }
+
+        case RI_TAIL: {
+            /* Quick lunge (tail swipe is contact damage) */
+            fx32 dx = g_player.body.pos.x - b->body.pos.x;
+            if (dx < 0) b->body.pos.x -= RI_FLY_SPEED * 2;
+            else b->body.pos.x += RI_FLY_SPEED * 2;
+
+            b->ai_timer++;
+            if (b->ai_timer >= RI_TAIL_FRAMES) {
+                b->ai_state = RI_FLY;
+                b->ai_timer = 0;
+            }
+            break;
+        }
+
+        case RI_FIREBALL: {
+            if (b->ai_timer == 0) {
+                /* Fire 1-3 based on aggression (lower HP = more) */
+                int count = (g_boss.hp < g_boss.hp_max / 2) ? 3 : 1;
+                fx32 dx = g_player.body.pos.x - b->body.pos.x;
+                fx32 base_vx = (dx > 0) ? RI_FIREBALL_SPEED :
+                                           -RI_FIREBALL_SPEED;
+                for (int i = 0; i < count; i++) {
+                    fx32 vy = INT_TO_FX(i - 1); /* -1, 0, +1 spread */
+                    projectile_spawn(PROJ_ENEMY_BULLET, PROJ_OWNER_ENEMY,
+                                    b->body.pos.x, b->body.pos.y,
+                                    base_vx, vy);
+                }
+            }
+
+            b->ai_timer++;
+            if (b->ai_timer >= RI_FIREBALL_FRAMES) {
+                b->ai_state = RI_FLY;
+                b->ai_timer = 0;
+            }
+            break;
+        }
+
+        case RI_GRAB: {
+            if (b->ai_timer < RI_GRAB_FRAMES / 2) {
+                /* Chase player */
+                fx32 dx = g_player.body.pos.x - b->body.pos.x;
+                fx32 dy = g_player.body.pos.y - b->body.pos.y;
+                if (dx > 0) b->body.pos.x += RI_FLY_SPEED * 2;
+                else if (dx < 0) b->body.pos.x -= RI_FLY_SPEED * 2;
+                if (dy > 0) b->body.pos.y += RI_FLY_SPEED;
+                else if (dy < 0) b->body.pos.y -= RI_FLY_SPEED;
+
+                /* If close, damage */
+                fx32 adx = dx < 0 ? -dx : dx;
+                fx32 ady = dy < 0 ? -dy : dy;
+                if (adx < INT_TO_FX(12) && ady < INT_TO_FX(12)) {
+                    player_damage(RI_GRAB_DAMAGE);
+                }
+            }
+
+            b->ai_timer++;
+            if (b->ai_timer >= RI_GRAB_FRAMES) {
+                b->ai_state = RI_FLY;
+                b->ai_timer = 0;
+            }
+            break;
+        }
+
+        case RI_POGO: {
+            /* Bounce from above */
+            b->body.pos.y += RI_POGO_SPEED;
+            b->ai_timer++;
+
+            /* Bounce back up at half */
+            if (b->ai_timer == RI_POGO_FRAMES / 2) {
+                camera_shake(5, 2);
+            }
+            if (b->ai_timer > RI_POGO_FRAMES / 2) {
+                b->body.pos.y -= RI_POGO_SPEED;
+            }
+
+            if (b->ai_timer >= RI_POGO_FRAMES) {
+                b->ai_state = RI_FLY;
+                b->ai_timer = 0;
+            }
+            break;
+        }
+
+        case RI_DEATH: {
+            /* Explosion sequence */
+            if ((b->ai_timer % 10) == 0) {
+                camera_shake(5, 3);
+            }
+            b->ai_timer++;
+            if (b->ai_timer >= RI_DEATH_FRAMES) {
+                b->active = false;
+            }
+            break;
+        }
+    }
+
+    if (b->active && b->ai_state != RI_DEATH) {
+        if (boss_aabb_overlap(b->body.pos, b->body.hitbox,
+                              g_player.body.pos, g_player.body.hitbox)) {
+            player_damage(b->damage_contact);
+        }
+    }
+}
+
+/* ========================================================================
+ * Mother Brain AI
+ *
+ * 3-phase final boss:
+ *   Phase 1: Brain in tank (3000 HP) - fires rinkas, turret projectiles
+ *   Phase 2: Standing form (18000 HP) - beam attacks, bomb drops
+ *   Phase 3: Final (36000 HP) - hyper beam sequence (scripted)
+ *
+ * phase field tracks current phase (0, 1, 2).
+ * HP is reset on phase transition.
+ * ======================================================================== */
+
+enum {
+    MB_TANK_IDLE = 0,     /* Phase 1: idle in tank */
+    MB_TANK_ATTACK,       /* Phase 1: rinka/turret fire */
+    MB_TANK_BREAK,        /* Phase 1→2 transition */
+    MB_STAND_IDLE,        /* Phase 2: standing idle */
+    MB_STAND_BEAM,        /* Phase 2: beam attack */
+    MB_STAND_BOMB,        /* Phase 2: bomb drop */
+    MB_HYPER_SETUP,       /* Phase 2→3 transition (baby metroid) */
+    MB_HYPER_BEAM,        /* Phase 3: Samus has hyper beam */
+    MB_DEATH              /* Final death */
+};
+
+#define MB_HP_PHASE1           3000
+#define MB_HP_PHASE2           18000
+#define MB_HP_PHASE3           36000
+#define MB_CONTACT_DAMAGE      20
+#define MB_HITBOX_HALF_W       INT_TO_FX(16)
+#define MB_HITBOX_HALF_H       INT_TO_FX(16)
+#define MB_RINKA_SPEED         INT_TO_FX(2)
+#define MB_RINKA_INTERVAL      60
+#define MB_BEAM_SPEED          INT_TO_FX(4)
+#define MB_BEAM_FRAMES         30
+#define MB_BOMB_VY             INT_TO_FX(2)
+#define MB_BOMB_FRAMES         25
+#define MB_BREAK_FRAMES        90
+#define MB_HYPER_SETUP_FRAMES  120
+#define MB_IDLE_FRAMES         60
+#define MB_DEATH_FRAMES        180
+
+static void mother_brain_init(void) {
+    g_boss.hp = MB_HP_PHASE1;
+    g_boss.hp_max = MB_HP_PHASE1;
+    g_boss.damage_contact = MB_CONTACT_DAMAGE;
+    g_boss.body.hitbox.half_w = MB_HITBOX_HALF_W;
+    g_boss.body.hitbox.half_h = MB_HITBOX_HALF_H;
+    g_boss.vulnerable = true;
+    g_boss.phase = 0;
+    g_boss.ai_state = MB_TANK_IDLE;
+    g_boss.ai_timer = 0;
+    g_boss.ai_counter = 0;
+    g_boss.sub_timer = 0;
+    g_boss.attack_count = 0;
+}
+
+static void mother_brain_update(void) {
+    Boss* b = &g_boss;
+
+    if (b->invuln_timer > 0) b->invuln_timer--;
+
+    switch (b->ai_state) {
+        /* === Phase 1: Brain in tank === */
+        case MB_TANK_IDLE: {
+            b->ai_timer++;
+            if (b->ai_timer >= MB_IDLE_FRAMES) {
+                b->ai_state = MB_TANK_ATTACK;
+                b->ai_timer = 0;
+            }
+            break;
+        }
+
+        case MB_TANK_ATTACK: {
+            b->sub_timer++;
+            if (b->sub_timer >= MB_RINKA_INTERVAL) {
+                b->sub_timer = 0;
+                /* Spawn rinka aimed at player */
+                fx32 dx = g_player.body.pos.x - b->body.pos.x;
+                fx32 vx = (dx > 0) ? MB_RINKA_SPEED : -MB_RINKA_SPEED;
+                projectile_spawn(PROJ_ENEMY_BULLET, PROJ_OWNER_ENEMY,
+                                b->body.pos.x, b->body.pos.y, vx, 0);
+                b->attack_count++;
+            }
+
+            b->ai_timer++;
+            if (b->ai_timer >= MB_IDLE_FRAMES * 3) {
+                b->ai_state = MB_TANK_IDLE;
+                b->ai_timer = 0;
+            }
+            break;
+        }
+
+        case MB_TANK_BREAK: {
+            /* Phase 1 → 2 transition */
+            b->ai_timer++;
+            if ((b->ai_timer % 15) == 0) camera_shake(10, 3);
+            if (b->ai_timer >= MB_BREAK_FRAMES) {
+                b->phase = 1;
+                b->hp = MB_HP_PHASE2;
+                b->hp_max = MB_HP_PHASE2;
+                b->ai_state = MB_STAND_IDLE;
+                b->ai_timer = 0;
+                b->sub_timer = 0;
+                b->attack_count = 0;
+                b->vulnerable = true;
+                camera_shake(30, 5);
+            }
+            break;
+        }
+
+        /* === Phase 2: Standing === */
+        case MB_STAND_IDLE: {
+            b->ai_timer++;
+            if (b->ai_timer >= MB_IDLE_FRAMES) {
+                /* Alternate beam and bomb */
+                if ((b->ai_counter & 1) == 0) {
+                    b->ai_state = MB_STAND_BEAM;
+                } else {
+                    b->ai_state = MB_STAND_BOMB;
+                }
+                b->ai_timer = 0;
+                b->ai_counter++;
+            }
+            break;
+        }
+
+        case MB_STAND_BEAM: {
+            if (b->ai_timer == 0) {
+                fx32 dx = g_player.body.pos.x - b->body.pos.x;
+                fx32 vx = (dx > 0) ? MB_BEAM_SPEED : -MB_BEAM_SPEED;
+                /* Ring pattern: 3 beams */
+                projectile_spawn(PROJ_ENEMY_BULLET, PROJ_OWNER_ENEMY,
+                                b->body.pos.x, b->body.pos.y,
+                                vx, -(MB_BEAM_SPEED >> 1));
+                projectile_spawn(PROJ_ENEMY_BULLET, PROJ_OWNER_ENEMY,
+                                b->body.pos.x, b->body.pos.y, vx, 0);
+                projectile_spawn(PROJ_ENEMY_BULLET, PROJ_OWNER_ENEMY,
+                                b->body.pos.x, b->body.pos.y,
+                                vx, MB_BEAM_SPEED >> 1);
+            }
+
+            b->ai_timer++;
+            if (b->ai_timer >= MB_BEAM_FRAMES) {
+                b->ai_state = MB_STAND_IDLE;
+                b->ai_timer = 0;
+            }
+            break;
+        }
+
+        case MB_STAND_BOMB: {
+            if (b->ai_timer == 0) {
+                /* Drop bomb downward */
+                projectile_spawn(PROJ_ENEMY_BULLET, PROJ_OWNER_ENEMY,
+                                b->body.pos.x - INT_TO_FX(16),
+                                b->body.pos.y, 0, MB_BOMB_VY);
+                projectile_spawn(PROJ_ENEMY_BULLET, PROJ_OWNER_ENEMY,
+                                b->body.pos.x + INT_TO_FX(16),
+                                b->body.pos.y, 0, MB_BOMB_VY);
+            }
+
+            b->ai_timer++;
+            if (b->ai_timer >= MB_BOMB_FRAMES) {
+                b->ai_state = MB_STAND_IDLE;
+                b->ai_timer = 0;
+            }
+            break;
+        }
+
+        case MB_HYPER_SETUP: {
+            /* Phase 2 → 3 transition (baby metroid sequence) */
+            b->ai_timer++;
+            if ((b->ai_timer % 20) == 0) camera_shake(5, 2);
+            if (b->ai_timer >= MB_HYPER_SETUP_FRAMES) {
+                b->phase = 2;
+                b->hp = MB_HP_PHASE3;
+                b->hp_max = MB_HP_PHASE3;
+                b->ai_state = MB_HYPER_BEAM;
+                b->ai_timer = 0;
+                b->vulnerable = true;
+            }
+            break;
+        }
+
+        /* === Phase 3: Hyper Beam === */
+        case MB_HYPER_BEAM: {
+            /* Simplified: Mother Brain attacks, Samus has hyper beam */
+            b->sub_timer++;
+            if (b->sub_timer >= 30) {
+                b->sub_timer = 0;
+                fx32 dx = g_player.body.pos.x - b->body.pos.x;
+                fx32 vx = (dx > 0) ? MB_BEAM_SPEED : -MB_BEAM_SPEED;
+                projectile_spawn(PROJ_ENEMY_BULLET, PROJ_OWNER_ENEMY,
+                                b->body.pos.x, b->body.pos.y, vx, 0);
+            }
+            break;
+        }
+
+        case MB_DEATH: {
+            if ((b->ai_timer % 10) == 0) camera_shake(10, 4);
+            b->ai_timer++;
+            if (b->ai_timer >= MB_DEATH_FRAMES) {
+                b->active = false;
+            }
+            break;
+        }
+    }
+
+    /* Contact damage (phases 2+3 only, not during transitions) */
+    if (b->active && b->phase > 0 &&
+        b->ai_state != MB_TANK_BREAK && b->ai_state != MB_HYPER_SETUP &&
+        b->ai_state != MB_DEATH) {
+        if (boss_aabb_overlap(b->body.pos, b->body.hitbox,
+                              g_player.body.pos, g_player.body.hitbox)) {
+            player_damage(b->damage_contact);
+        }
+    }
+}
+
+/* ========================================================================
  * AI Dispatch Tables
  * ======================================================================== */
 
@@ -1247,21 +2047,29 @@ typedef void (*BossInitFn)(void);
 typedef void (*BossUpdateFn)(void);
 
 static const BossInitFn boss_init_fns[BOSS_TYPE_COUNT] = {
-    [BOSS_SPORE_SPAWN]  = spore_spawn_init,
-    [BOSS_CROCOMIRE]    = crocomire_init,
-    [BOSS_BOMB_TORIZO]  = bomb_torizo_init,
-    [BOSS_KRAID]        = kraid_init,
-    [BOSS_BOTWOON]      = botwoon_init,
-    [BOSS_PHANTOON]     = phantoon_init,
+    [BOSS_SPORE_SPAWN]    = spore_spawn_init,
+    [BOSS_CROCOMIRE]      = crocomire_init,
+    [BOSS_BOMB_TORIZO]    = bomb_torizo_init,
+    [BOSS_KRAID]          = kraid_init,
+    [BOSS_BOTWOON]        = botwoon_init,
+    [BOSS_PHANTOON]       = phantoon_init,
+    [BOSS_DRAYGON]        = draygon_init,
+    [BOSS_GOLDEN_TORIZO]  = golden_torizo_init,
+    [BOSS_RIDLEY]         = ridley_init,
+    [BOSS_MOTHER_BRAIN]   = mother_brain_init,
 };
 
 static const BossUpdateFn boss_update_fns[BOSS_TYPE_COUNT] = {
-    [BOSS_SPORE_SPAWN]  = spore_spawn_update,
-    [BOSS_CROCOMIRE]    = crocomire_update,
-    [BOSS_BOMB_TORIZO]  = bomb_torizo_update,
-    [BOSS_KRAID]        = kraid_update,
-    [BOSS_BOTWOON]      = botwoon_update,
-    [BOSS_PHANTOON]     = phantoon_update,
+    [BOSS_SPORE_SPAWN]    = spore_spawn_update,
+    [BOSS_CROCOMIRE]      = crocomire_update,
+    [BOSS_BOMB_TORIZO]    = bomb_torizo_update,
+    [BOSS_KRAID]          = kraid_update,
+    [BOSS_BOTWOON]        = botwoon_update,
+    [BOSS_PHANTOON]       = phantoon_update,
+    [BOSS_DRAYGON]        = draygon_update,
+    [BOSS_GOLDEN_TORIZO]  = golden_torizo_update,
+    [BOSS_RIDLEY]         = ridley_update,
+    [BOSS_MOTHER_BRAIN]   = mother_brain_update,
 };
 
 /* ========================================================================
@@ -1370,6 +2178,17 @@ void boss_damage(int16_t damage) {
         g_boss.param_b = FX_ONE;  /* Set rage flag */
     }
 
+    /* Golden Torizo: catches super missiles (damage >= 200) */
+    if (g_boss.type == BOSS_GOLDEN_TORIZO && g_boss.hp > 0 &&
+        damage >= 200 && g_boss.ai_state != GT_CATCH &&
+        g_boss.ai_state != GT_THROW_BACK) {
+        g_boss.hp += damage; /* Undo the damage */
+        g_boss.ai_state = GT_CATCH;
+        g_boss.ai_timer = 0;
+        g_boss.param_b = FX_ONE; /* Has caught projectile */
+        return; /* Skip normal death check */
+    }
+
     if (g_boss.hp <= 0) {
         g_boss.hp = 0;
         g_boss.vulnerable = false;
@@ -1392,6 +2211,29 @@ void boss_damage(int16_t damage) {
                 break;
             case BOSS_PHANTOON:
                 g_boss.ai_state = PH_DEATH;
+                break;
+            case BOSS_DRAYGON:
+                g_boss.ai_state = DY_DEATH;
+                break;
+            case BOSS_GOLDEN_TORIZO:
+                g_boss.ai_state = GT_DEATH;
+                break;
+            case BOSS_RIDLEY:
+                g_boss.ai_state = RI_DEATH;
+                break;
+            case BOSS_MOTHER_BRAIN:
+                /* Phase transitions instead of death for phases 1 and 2 */
+                if (g_boss.phase == 0) {
+                    g_boss.ai_state = MB_TANK_BREAK;
+                    g_boss.ai_timer = 0;
+                    g_boss.vulnerable = false;
+                } else if (g_boss.phase == 1) {
+                    g_boss.ai_state = MB_HYPER_SETUP;
+                    g_boss.ai_timer = 0;
+                    g_boss.vulnerable = false;
+                } else {
+                    g_boss.ai_state = MB_DEATH;
+                }
                 break;
             default:
                 g_boss.active = false;

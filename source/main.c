@@ -765,6 +765,111 @@ static void run_boss_tests(void) {
     }
     test("ph_dead", !boss_is_active());
 
+    /* --- Draygon tests --- */
+
+    boss_init();
+    boss_spawn(BOSS_DRAYGON, INT_TO_FX(128), INT_TO_FX(80));
+    test("dy_active", boss_is_active());
+    test("dy_hp=6000", g_boss.hp == 6000);
+    test("dy_vuln", g_boss.vulnerable == true);
+
+    /* Kill Draygon */
+    g_boss.hp = 10;
+    boss_damage(20);
+    test("dy_hp0", g_boss.hp <= 0);
+    for (int f = 0; f < 200; f++) {
+        boss_update();
+        if (!boss_is_active()) break;
+    }
+    test("dy_dead", !boss_is_active());
+
+    /* --- Golden Torizo tests --- */
+
+    boss_init();
+    boss_spawn(BOSS_GOLDEN_TORIZO, INT_TO_FX(128), INT_TO_FX(120));
+    test("gt_active", boss_is_active());
+    test("gt_hp=8000", g_boss.hp == 8000);
+
+    /* Test: catches super missiles (damage >= 200) */
+    boss_damage(300);
+    test("gt_catch", g_boss.hp == 8000); /* HP restored after catch */
+
+    /* Test: normal damage still works */
+    g_boss.invuln_timer = 0;
+    g_boss.ai_state = 0; /* GT_IDLE */
+    boss_damage(50);
+    test("gt_dmg_ok", g_boss.hp == 7950);
+
+    /* Kill Golden Torizo */
+    boss_init();
+    boss_spawn(BOSS_GOLDEN_TORIZO, INT_TO_FX(128), INT_TO_FX(120));
+    g_boss.hp = 10;
+    boss_damage(20);
+    for (int f = 0; f < 200; f++) {
+        boss_update();
+        if (!boss_is_active()) break;
+    }
+    test("gt_dead", !boss_is_active());
+
+    /* --- Ridley tests --- */
+
+    boss_init();
+    boss_spawn(BOSS_RIDLEY, INT_TO_FX(128), INT_TO_FX(80));
+    test("ri_active", boss_is_active());
+    test("ri_hp=18000", g_boss.hp == 18000);
+    test("ri_vuln", g_boss.vulnerable == true);
+
+    /* Kill Ridley */
+    g_boss.hp = 10;
+    boss_damage(20);
+    for (int f = 0; f < 300; f++) {
+        boss_update();
+        if (!boss_is_active()) break;
+    }
+    test("ri_dead", !boss_is_active());
+
+    /* --- Mother Brain tests --- */
+
+    boss_init();
+    boss_spawn(BOSS_MOTHER_BRAIN, INT_TO_FX(200), INT_TO_FX(96));
+    test("mb_active", boss_is_active());
+    test("mb_hp=3000", g_boss.hp == 3000);
+    test("mb_phase0", g_boss.phase == 0);
+
+    /* Phase 1 → 2 transition */
+    g_boss.hp = 10;
+    boss_damage(20);
+    /* Should enter TANK_BREAK, not die */
+    test("mb_still_active", boss_is_active());
+    /* Run through transition */
+    for (int f = 0; f < 200; f++) {
+        boss_update();
+        if (g_boss.phase == 1) break;
+    }
+    test("mb_phase1", g_boss.phase == 1);
+    test("mb_hp2=18000", g_boss.hp == 18000);
+
+    /* Phase 2 → 3 transition */
+    g_boss.vulnerable = true;
+    g_boss.hp = 10;
+    boss_damage(20);
+    for (int f = 0; f < 200; f++) {
+        boss_update();
+        if (g_boss.phase == 2) break;
+    }
+    test("mb_phase2", g_boss.phase == 2);
+    test("mb_hp3=36000", g_boss.hp == 36000);
+
+    /* Phase 3 death */
+    g_boss.vulnerable = true;
+    g_boss.hp = 10;
+    boss_damage(20);
+    for (int f = 0; f < 300; f++) {
+        boss_update();
+        if (!boss_is_active()) break;
+    }
+    test("mb_dead", !boss_is_active());
+
     /* Cleanup */
     boss_init();
 
@@ -918,7 +1023,7 @@ static void gameplay_update(void) {
         }
         boss_spawn(next_boss, spawn_x, spawn_y);
         next_boss++;
-        if (next_boss > BOSS_PHANTOON) {
+        if (next_boss > BOSS_MOTHER_BRAIN) {
             next_boss = BOSS_SPORE_SPAWN;
         }
     }
