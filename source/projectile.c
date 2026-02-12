@@ -110,6 +110,21 @@ static void bomb_explode(Projectile* p) {
         }
     }
 
+    /* Break bomb blocks in blast radius */
+    {
+        int center_tx = FX_TO_INT(p->pos.x) >> TILE_SHIFT;
+        int center_ty = FX_TO_INT(p->pos.y) >> TILE_SHIFT;
+        int radius_tiles = FX_TO_INT(def->half_w) >> TILE_SHIFT;
+        if (radius_tiles < 1) radius_tiles = 1;
+        for (int ty = center_ty - radius_tiles; ty <= center_ty + radius_tiles; ty++) {
+            for (int tx = center_tx - radius_tiles; tx <= center_tx + radius_tiles; tx++) {
+                if (room_get_collision(tx, ty) == COLL_SPECIAL_BOMB) {
+                    room_set_collision(tx, ty, COLL_AIR);
+                }
+            }
+        }
+    }
+
     /* Bomb jump: push player upward if close enough */
     fx32 px = p->pos.x - g_player.body.pos.x;
     fx32 py = p->pos.y - g_player.body.pos.y;
@@ -280,10 +295,21 @@ void projectile_update_all(void) {
         if (!proj_defs[p->type].wall_pass) {
             int tile_x = FX_TO_INT(p->pos.x) >> TILE_SHIFT;
             int tile_y = FX_TO_INT(p->pos.y) >> TILE_SHIFT;
-            if (room_get_collision(tile_x, tile_y) == COLL_SOLID) {
+            uint8_t coll = room_get_collision(tile_x, tile_y);
+            if (coll == COLL_SOLID) {
                 p->active = false;
                 projectile_remove(i);
                 continue;
+            }
+            /* Break shot blocks on beam/missile hit */
+            if (coll == COLL_SPECIAL_SHOT && p->owner == PROJ_OWNER_PLAYER) {
+                room_set_collision(tile_x, tile_y, COLL_AIR);
+                /* Destroy non-plasma projectiles */
+                if (!proj_defs[p->type].enemy_pass) {
+                    p->active = false;
+                    projectile_remove(i);
+                    continue;
+                }
             }
         }
 

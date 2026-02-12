@@ -294,6 +294,16 @@ void enemy_clear_all(void) {
  * Public API: Per-Frame Update & Render
  * ======================================================================== */
 
+/* AABB overlap check for contact damage */
+static bool enemy_aabb_overlap(const Enemy* e, const PhysicsBody* target) {
+    fx32 dx = e->body.pos.x - target->pos.x;
+    fx32 dy = e->body.pos.y - target->pos.y;
+    if (dx < 0) dx = -dx;
+    if (dy < 0) dy = -dy;
+    return dx < (e->body.hitbox.half_w + target->hitbox.half_w) &&
+           dy < (e->body.hitbox.half_h + target->hitbox.half_h);
+}
+
 void enemy_update_all(void) {
     /* Iterate backward so swap-remove doesn't skip entries */
     for (int i = active_count - 1; i >= 0; i--) {
@@ -306,6 +316,14 @@ void enemy_update_all(void) {
         /* Run type-specific AI */
         if (ai_fns[e->type]) {
             ai_fns[e->type](e);
+        }
+
+        /* Contact damage vs player */
+        if (e->active && e->damage_contact > 0 &&
+            g_player.alive && g_player.invuln_timer == 0) {
+            if (enemy_aabb_overlap(e, &g_player.body)) {
+                player_damage_from(e->damage_contact, e->body.pos.x);
+            }
         }
 
         /* Animation timer (simple 4-frame cycle) */

@@ -27,10 +27,18 @@ static inline int fx_to_tile(fx32 pos) {
     return FX_TO_INT(pos) >> TILE_SHIFT;
 }
 
+/* Returns true if collision type acts as solid for movement */
+static inline bool is_collision_solid(uint8_t coll) {
+    if (coll == COLL_SOLID) return true;
+    /* Special blocks (0x20-0x2F) are solid until broken */
+    if ((coll & 0xF0) == COLL_SPECIAL_BASE) return true;
+    return false;
+}
+
 /* Check if any tile in a horizontal range at a given row is solid */
 static bool row_has_solid(int tile_x_min, int tile_x_max, int tile_y) {
     for (int tx = tile_x_min; tx <= tile_x_max; tx++) {
-        if (room_get_collision(tx, tile_y) == COLL_SOLID) {
+        if (is_collision_solid(room_get_collision(tx, tile_y))) {
             return true;
         }
     }
@@ -40,7 +48,7 @@ static bool row_has_solid(int tile_x_min, int tile_x_max, int tile_y) {
 /* Check if any tile in a vertical range at a given column is solid */
 static bool col_has_solid(int tile_x, int tile_y_min, int tile_y_max) {
     for (int ty = tile_y_min; ty <= tile_y_max; ty++) {
-        if (room_get_collision(tile_x, ty) == COLL_SOLID) {
+        if (is_collision_solid(room_get_collision(tile_x, ty))) {
             return true;
         }
     }
@@ -218,4 +226,22 @@ void physics_update_body(PhysicsBody* body) {
 
     /* 6. Ground sensor (for standing detection when vel.y == 0) */
     check_ground_sensor(body);
+
+    /* 7. Hazard detection: check tile at body center */
+    {
+        int cx = fx_to_tile(body->pos.x);
+        int cy = fx_to_tile(body->pos.y);
+        uint8_t coll = room_get_collision(cx, cy);
+        if ((coll & 0xF0) == COLL_HAZARD_BASE) {
+            body->contact.on_hazard = true;
+            body->contact.hazard_type = coll;
+        }
+        /* Also check tile at feet for standing on spikes/lava */
+        int fy = fx_to_tile(body->pos.y + body->hitbox.half_h);
+        uint8_t fcoll = room_get_collision(cx, fy);
+        if ((fcoll & 0xF0) == COLL_HAZARD_BASE && !body->contact.on_hazard) {
+            body->contact.on_hazard = true;
+            body->contact.hazard_type = fcoll;
+        }
+    }
 }

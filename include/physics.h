@@ -28,7 +28,9 @@ typedef struct {
     bool on_wall_right;
     bool in_water;
     bool on_slope;
-    int  slope_angle;   /* BTS slope variant if on_slope */
+    bool on_hazard;
+    uint8_t hazard_type;   /* COLL_HAZARD_SPIKE, COLL_HAZARD_LAVA, etc. */
+    int  slope_angle;      /* BTS slope variant if on_slope */
 } ContactFlags;
 
 /* Physics body -- attach to any entity that moves */

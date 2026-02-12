@@ -16,6 +16,7 @@
 #include "camera.h"
 #include "input.h"
 #include "graphics.h"
+#include "room.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -190,6 +191,28 @@ static void state_morphball(void) {
     }
 }
 
+static void state_damage(void) {
+    /* Input locked during knockback - physics still runs */
+    if (g_player.invuln_timer > (INVULN_FRAMES - KNOCKBACK_FRAMES)) {
+        /* Still in knockback phase */
+        return;
+    }
+    /* Knockback expired: transition to falling */
+    change_state(PSTATE_FALLING);
+}
+
+static void state_death(void) {
+    /* Freeze physics (zero velocity) */
+    g_player.body.vel.x = 0;
+    g_player.body.vel.y = 0;
+
+    /* Death timer: uses anim_timer as countdown */
+    if (g_player.anim.frame_timer > 0) {
+        g_player.anim.frame_timer--;
+    }
+    /* Timer expiry handled in post_physics_check -> state manager */
+}
+
 static void state_stub(void) {
     /* Placeholder for unimplemented states */
 }
@@ -281,8 +304,8 @@ void player_init(void) {
     state_fns[PSTATE_MORPHBALL]       = state_morphball;
     state_fns[PSTATE_SPRING_BALL]     = state_stub;
     state_fns[PSTATE_WALLJUMP]        = state_stub;
-    state_fns[PSTATE_DAMAGE]          = state_stub;
-    state_fns[PSTATE_DEATH]           = state_stub;
+    state_fns[PSTATE_DAMAGE]          = state_damage;
+    state_fns[PSTATE_DEATH]           = state_death;
     state_fns[PSTATE_SHINESPARK_CHARGE] = state_stub;
     state_fns[PSTATE_SHINESPARK]      = state_stub;
     state_fns[PSTATE_GRAPPLE]         = state_stub;
@@ -307,13 +330,63 @@ void player_update(void) {
     /* 3. Post-physics state corrections (landing, edge falling, apex) */
     post_physics_check();
 
-    /* 4. Decrement timers */
+    /* 4. Hazard response */
+    if (g_player.body.contact.on_hazard && g_player.invuln_timer == 0) {
+        switch (g_player.body.contact.hazard_type) {
+            case COLL_HAZARD_SPIKE:
+                /* 60 damage + upward bounce */
+                g_player.body.vel.y = -KNOCKBACK_VEL_Y;
+                player_damage(60);
+                break;
+            case COLL_HAZARD_LAVA:
+                /* Periodic damage (10 HP every 30 frames) - set env to lava */
+                g_player.body.env = ENV_LAVA;
+                player_damage(10);
+                break;
+            default:
+                break;
+        }
+    }
+    /* Restore env to air when not on lava hazard */
+    if (!g_player.body.contact.on_hazard && g_player.body.env == ENV_LAVA) {
+        g_player.body.env = ENV_AIR;
+    }
+
+    /* 5. Crumble block detection: check tile below feet */
+    if (g_player.body.contact.on_ground) {
+        int fx = FX_TO_INT(g_player.body.pos.x) >> TILE_SHIFT;
+        int fy = FX_TO_INT(g_player.body.pos.y + g_player.body.hitbox.half_h) >> TILE_SHIFT;
+        if (room_get_collision(fx, fy) == COLL_SPECIAL_CRUMBLE) {
+            int w = g_current_room.width_tiles;
+            int idx = fy * w + fx;
+            if (g_current_room.crumble_timer[idx] == 0) {
+                g_current_room.crumble_timer[idx] = 30;  /* 30 frame timer */
+            }
+        }
+    }
+
+    /* 6. Decrement timers */
     if (g_player.invuln_timer > 0) g_player.invuln_timer--;
     if (g_player.shinespark_timer > 0) g_player.shinespark_timer--;
 }
 
 void player_render(void) {
-    if (!g_player.alive) return;
+    if (!g_player.alive) {
+        /* Death state: show sprite briefly then hide */
+        if (g_player.state == PSTATE_DEATH) {
+            int sx = FX_TO_INT(g_player.body.pos.x) - FX_TO_INT(g_camera.x) - 8;
+            int sy = FX_TO_INT(g_player.body.pos.y) - FX_TO_INT(g_camera.y) - 8;
+            graphics_set_sprite(OAM_PLAYER_START, sx, sy, 0, 0, 1,
+                               g_player.facing == DIR_LEFT, false);
+        }
+        return;
+    }
+
+    /* I-frame blink: hide sprite every other 4 frames */
+    if (g_player.invuln_timer > 0 && (g_player.invuln_timer & 4)) {
+        graphics_hide_sprite(OAM_PLAYER_START);
+        return;
+    }
 
     /* World to screen: subtract camera offset */
     int sx = FX_TO_INT(g_player.body.pos.x) - FX_TO_INT(g_camera.x) - 8;
@@ -334,5 +407,20 @@ void player_damage(int16_t damage) {
         g_player.hp = 0;
         g_player.alive = false;
         change_state(PSTATE_DEATH);
+        g_player.anim.frame_timer = 120;  /* 2 second death freeze */
+    } else {
+        change_state(PSTATE_DAMAGE);
     }
+}
+
+void player_damage_from(int16_t damage, fx32 source_x) {
+    if (!g_player.alive) return;
+    if (g_player.invuln_timer > 0) return;
+
+    /* Apply knockback velocity away from source */
+    fx32 kb_x = (source_x < g_player.body.pos.x) ? KNOCKBACK_VEL_X : -KNOCKBACK_VEL_X;
+    g_player.body.vel.x = kb_x;
+    g_player.body.vel.y = -KNOCKBACK_VEL_Y;
+
+    player_damage(damage);
 }

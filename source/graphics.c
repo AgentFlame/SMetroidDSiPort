@@ -215,3 +215,41 @@ void graphics_hide_sprite(int oam_idx) {
     if (oam_idx < 0 || oam_idx >= 128) return;
     oamClearSprite(&oamMain, oam_idx);
 }
+
+/* ========================================================================
+ * Screen Brightness (for fade transitions)
+ *
+ * REG_MASTER_BRIGHT format (0x0400006C main, 0x0400106C sub):
+ *   Bits 0-4:  Intensity (0-16)
+ *   Bits 14-15: Mode (0=off, 1=brighten/white, 2=darken/black, 3=reserved)
+ *
+ * level: -16 (full black) to 0 (normal) to +16 (full white)
+ * ======================================================================== */
+
+void graphics_set_brightness(int level) {
+    if (level == 0) {
+        REG_MASTER_BRIGHT = 0;
+    } else if (level < 0) {
+        int intensity = -level;
+        if (intensity > 16) intensity = 16;
+        REG_MASTER_BRIGHT = (2 << 14) | intensity;
+    } else {
+        int intensity = level;
+        if (intensity > 16) intensity = 16;
+        REG_MASTER_BRIGHT = (1 << 14) | intensity;
+    }
+}
+
+void graphics_set_brightness_sub(int level) {
+    if (level == 0) {
+        REG_MASTER_BRIGHT_SUB = 0;
+    } else if (level < 0) {
+        int intensity = -level;
+        if (intensity > 16) intensity = 16;
+        REG_MASTER_BRIGHT_SUB = (2 << 14) | intensity;
+    } else {
+        int intensity = level;
+        if (intensity > 16) intensity = 16;
+        REG_MASTER_BRIGHT_SUB = (1 << 14) | intensity;
+    }
+}

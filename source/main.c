@@ -1,9 +1,11 @@
 /**
  * main.c - Super Metroid DS entry point
  *
- * M0-M16 skeleton: fixed-point math, input, state manager, graphics,
- * room loading, physics engine, player state machine, camera, enemies,
- * projectiles, bosses (all 10), HUD, audio system, save system.
+ * Clean boot sequence: init hardware, run tests (debug only),
+ * register game states, enter title screen.
+ *
+ * All gameplay logic is in gameplay.c (M17f extraction).
+ * Tests are gated behind DEBUG_TESTS define.
  */
 
 #include <nds.h>
@@ -30,6 +32,9 @@
 #include "save.h"
 #include "state.h"
 #include "hud.h"
+#include "gameplay.h"
+
+#ifdef DEBUG_TESTS
 
 /* ========================================================================
  * Test Infrastructure
@@ -163,6 +168,45 @@ static void run_room_tests(void) {
 
     /* M7 spawn data */
     test("spawn_count=3", g_current_room.spawn_count == 3);
+
+    /* M17a: Multi-room tests */
+    room_load(0, 0);
+    test("door_count=1", g_current_room.door_count == 1);
+    test("door_dest_1", g_current_room.doors[0].dest_room == 1);
+    test("room0_right_open",
+         room_get_collision(15, 7) == COLL_AIR);
+
+    /* Room (0,1): 32x12 wide room */
+    room_load(0, 1);
+    test("wide_w=32", g_current_room.width_tiles == 32);
+    test("wide_h=12", g_current_room.height_tiles == 12);
+    test("wide_doors=2", g_current_room.door_count == 2);
+    test("wide_scroll_x>0", g_current_room.scroll_max_x > 0);
+
+    /* Room (0,2): 16x24 tall room */
+    room_load(0, 2);
+    test("tall_w=16", g_current_room.width_tiles == 16);
+    test("tall_h=24", g_current_room.height_tiles == 24);
+    test("tall_scroll_y>0", g_current_room.scroll_max_y > 0);
+
+    /* Door collision detection */
+    room_load(0, 0);
+    PhysicsBody test_body;
+    memset(&test_body, 0, sizeof(test_body));
+    /* Place body at door position (tile 15,7 = pixel 248, 120) */
+    test_body.pos.x = INT_TO_FX(248);
+    test_body.pos.y = INT_TO_FX(120);
+    const DoorData* door = room_check_door_collision(&test_body);
+    test("door_detect", door != NULL);
+    test("door_dest", door != NULL && door->dest_room == 1);
+
+    /* No door at center of room */
+    test_body.pos.x = INT_TO_FX(128);
+    test_body.pos.y = INT_TO_FX(80);
+    test("no_door_center", room_check_door_collision(&test_body) == NULL);
+
+    /* Restore room (0,0) for subsequent tests */
+    room_load(0, 0);
 
     iprintf("%d/%d room OK\n",
             tests_passed - pre_passed,
@@ -689,7 +733,7 @@ static void run_boss_tests(void) {
     g_boss.vulnerable = true;
     boss_damage(200);
     test("kr_dmg_ok", g_boss.hp == 800);
-    /* Kraid flinches on hit — mouth closes */
+    /* Kraid flinches on hit -- mouth closes */
     test("kr_flinch", g_boss.ai_state == 5); /* KRAID_FLINCH */
     test("kr_mouth_close", g_boss.vulnerable == false);
 
@@ -836,7 +880,7 @@ static void run_boss_tests(void) {
     test("mb_hp=3000", g_boss.hp == 3000);
     test("mb_phase0", g_boss.phase == 0);
 
-    /* Phase 1 → 2 transition */
+    /* Phase 1 -> 2 transition */
     g_boss.hp = 10;
     boss_damage(20);
     /* Should enter TANK_BREAK, not die */
@@ -849,7 +893,7 @@ static void run_boss_tests(void) {
     test("mb_phase1", g_boss.phase == 1);
     test("mb_hp2=18000", g_boss.hp == 18000);
 
-    /* Phase 2 → 3 transition */
+    /* Phase 2 -> 3 transition */
     g_boss.vulnerable = true;
     g_boss.hp = 10;
     boss_damage(20);
@@ -1055,132 +1099,34 @@ static void run_save_tests(void) {
 }
 
 /* ========================================================================
- * Gameplay State Handlers
+ * Run All Tests
  * ======================================================================== */
 
-/* Determine beam type from equipped items */
-static ProjectileTypeID get_beam_type(void) {
-    if (g_player.equipment & EQUIP_PLASMA_BEAM) return PROJ_PLASMA_BEAM;
-    if (g_player.equipment & EQUIP_SPAZER_BEAM) return PROJ_SPAZER_BEAM;
-    if (g_player.equipment & EQUIP_WAVE_BEAM)   return PROJ_WAVE_BEAM;
-    if (g_player.equipment & EQUIP_ICE_BEAM)    return PROJ_ICE_BEAM;
-    return PROJ_POWER_BEAM;
-}
+static void run_all_tests(void) {
+    tests_passed = 0;
+    tests_total = 0;
 
-/* Can player fire in current state? */
-static bool can_fire(void) {
-    switch (g_player.state) {
-        case PSTATE_STANDING:
-        case PSTATE_RUNNING:
-        case PSTATE_JUMPING:
-        case PSTATE_SPIN_JUMPING:
-        case PSTATE_FALLING:
-        case PSTATE_CROUCHING:
-            return true;
-        default:
-            return false;
-    }
-}
+    run_fixed_math_tests();
+    run_room_tests();
+    run_physics_tests();
+    run_camera_tests();
+    run_enemy_tests();
+    run_projectile_tests();
+    run_boss_tests();
+    run_player_tests();
+    run_audio_tests();
+    run_save_tests();
 
-static void gameplay_enter(void) {
-    consoleClear();
-    iprintf(">> GAMEPLAY\n");
-
-    player_init();
-    camera_init();
-    enemy_pool_init();
-    projectile_pool_init();
-    boss_init();
-
-    if (!g_current_room.loaded) room_load(0, 0);
-
-    /* Spawn enemies from room data */
-    for (int i = 0; i < g_current_room.spawn_count; i++) {
-        EnemySpawnData* s = &g_current_room.spawns[i];
-        enemy_spawn((EnemyTypeID)s->enemy_id,
-                    INT_TO_FX(s->x), INT_TO_FX(s->y));
+    iprintf("\nTOTAL: %d/%d passed\n", tests_passed, tests_total);
+    if (tests_passed == tests_total) {
+        iprintf("ALL TESTS PASSED!\n\n");
     }
 
-    iprintf("Enemies: %d\n", enemy_get_count());
+    fprintf(stderr, "SuperMetroidDS: %d/%d tests passed\n",
+            tests_passed, tests_total);
 }
 
-static void gameplay_exit(void) {
-    enemy_clear_all();
-    projectile_clear_all();
-    boss_init();
-}
-
-static void gameplay_update(void) {
-    player_update();
-
-    /* Weapon firing */
-    if (can_fire()) {
-        /* X = fire beam */
-        if (input_pressed(KEY_X)) {
-            ProjectileTypeID beam = get_beam_type();
-            fx32 speed = INT_TO_FX(4);
-            fx32 vx = (g_player.facing == DIR_RIGHT) ? speed : -speed;
-            projectile_spawn(beam, PROJ_OWNER_PLAYER,
-                           g_player.body.pos.x, g_player.body.pos.y,
-                           vx, 0);
-        }
-        /* R = fire missile */
-        if (input_pressed(KEY_R) && g_player.missiles > 0) {
-            g_player.missiles--;
-            fx32 speed = INT_TO_FX(5);
-            fx32 vx = (g_player.facing == DIR_RIGHT) ? speed : -speed;
-            projectile_spawn(PROJ_MISSILE, PROJ_OWNER_PLAYER,
-                           g_player.body.pos.x, g_player.body.pos.y,
-                           vx, 0);
-        }
-        /* L = fire super missile */
-        if (input_pressed(KEY_L) && g_player.supers > 0) {
-            g_player.supers--;
-            fx32 speed = INT_TO_FX(5);
-            fx32 vx = (g_player.facing == DIR_RIGHT) ? speed : -speed;
-            projectile_spawn(PROJ_SUPER_MISSILE, PROJ_OWNER_PLAYER,
-                           g_player.body.pos.x, g_player.body.pos.y,
-                           vx, 0);
-        }
-    }
-
-    /* Bombs in morphball */
-    if (g_player.state == PSTATE_MORPHBALL &&
-        (g_player.equipment & EQUIP_BOMBS) &&
-        input_pressed(KEY_B)) {
-        projectile_spawn(PROJ_BOMB, PROJ_OWNER_PLAYER,
-                       g_player.body.pos.x, g_player.body.pos.y, 0, 0);
-    }
-
-    /* SELECT = cycle boss spawn (test trigger) */
-    if (input_pressed(KEY_SELECT) && !boss_is_active()) {
-        static BossTypeID next_boss = BOSS_SPORE_SPAWN;
-        fx32 spawn_x = g_player.body.pos.x + INT_TO_FX(64);
-        fx32 spawn_y = INT_TO_FX(48);
-        if (next_boss != BOSS_SPORE_SPAWN) {
-            spawn_y = g_player.body.pos.y;
-        }
-        boss_spawn(next_boss, spawn_x, spawn_y);
-        next_boss++;
-        if (next_boss > BOSS_MOTHER_BRAIN) {
-            next_boss = BOSS_SPORE_SPAWN;
-        }
-    }
-
-    enemy_update_all();
-    boss_update();
-    projectile_update_all();
-    camera_update();
-}
-
-static void gameplay_render(void) {
-    camera_apply();
-    player_render();
-    enemy_render_all();
-    boss_render();
-    projectile_render_all();
-    hud_render();
-}
+#endif /* DEBUG_TESTS */
 
 /* ========================================================================
  * Main Entry Point
@@ -1196,78 +1142,36 @@ int main(int argc, char* argv[]) {
      * Map base 4, tile base 3 -- no conflict with HUD/MAP layers. */
     consoleInit(NULL, 3, BgType_Text4bpp, BgSize_T_256x256, 4, 3, false, true);
 
-    iprintf("=========================\n");
-    iprintf("  Super Metroid DS Port\n");
-    iprintf("  M0-M16 Build\n");
-    iprintf("=========================\n\n");
-
     /* Initialize subsystems */
     room_init();
     camera_init();
     audio_init();
     save_init();
 
-    /* Run tests */
-    tests_passed = 0;
-    tests_total = 0;
-    run_fixed_math_tests();
-    run_room_tests();
-    run_physics_tests();
-    run_camera_tests();
-    run_enemy_tests();
-    run_projectile_tests();
-    run_boss_tests();
-    run_player_tests();
-    run_audio_tests();
-    run_save_tests();
+#ifdef DEBUG_TESTS
+    run_all_tests();
+#endif
 
-    /* Initialize state manager */
+    /* Initialize state manager and register game states */
     state_init();
+    gameplay_register_states();
 
-    /* Register gameplay state handlers */
-    state_set_handlers(STATE_GAMEPLAY, (StateHandlers){
-        gameplay_enter, gameplay_exit, gameplay_update, gameplay_render
-    });
+    fprintf(stderr, "SuperMetroidDS: M17 boot complete\n");
 
-    iprintf("\nTOTAL: %d/%d passed\n", tests_passed, tests_total);
-    if (tests_passed == tests_total) {
-        iprintf("ALL TESTS PASSED!\n\n");
-    }
-
-    iprintf("A=gameplay SELECT=boss\n");
-    iprintf("X=title START=exit\n\n");
-
-    fprintf(stderr, "SuperMetroidDS: M0-M16 boot, %d/%d tests\n",
-            tests_passed, tests_total);
+    /* Start at title screen */
+    state_set(STATE_TITLE);
 
     /* Main loop */
     while (pmMainLoop()) {
         swiWaitForVBlank();
         scanKeys();
 
-        /* Input system */
         input_update();
-
-        /* State transitions */
-        if (input_pressed(KEY_A) && state_current() != STATE_GAMEPLAY) {
-            state_set(STATE_GAMEPLAY);
-        }
-        if (input_pressed(KEY_X)) {
-            state_set(STATE_TITLE);
-        }
-
-        /* Update current state */
         state_update();
 
-        /* Render */
         graphics_begin_frame();
         state_render();
         graphics_end_frame();
-
-        /* Exit */
-        if (input_pressed(KEY_START)) {
-            break;
-        }
     }
 
     return 0;

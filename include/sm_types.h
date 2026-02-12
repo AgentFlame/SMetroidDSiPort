@@ -126,7 +126,47 @@ typedef enum {
 #define COLL_SOLID         0x01
 #define COLL_SLOPE_BASE    0x10
 #define COLL_SPECIAL_BASE  0x20
+#define COLL_SPECIAL_SHOT  0x21   /* Breakable by beam */
+#define COLL_SPECIAL_BOMB  0x22   /* Breakable by bomb */
+#define COLL_SPECIAL_CRUMBLE 0x23 /* Crumbles when stepped on */
+#define COLL_SPECIAL_SAVE  0x24   /* Save station */
 #define COLL_HAZARD_BASE   0x30
+#define COLL_HAZARD_SPIKE  0x31   /* Spike damage + upward bounce */
+#define COLL_HAZARD_LAVA   0x32   /* Periodic damage, changed gravity */
+
+/* Item type IDs */
+typedef enum {
+    ITEM_NONE = 0,
+    ITEM_ENERGY_TANK,
+    ITEM_MISSILE_TANK,
+    ITEM_SUPER_TANK,
+    ITEM_PB_TANK,
+    ITEM_MORPH_BALL,
+    ITEM_BOMBS,
+    ITEM_HI_JUMP,
+    ITEM_SPEED_BOOST,
+    ITEM_VARIA_SUIT,
+    ITEM_GRAVITY_SUIT,
+    ITEM_SPACE_JUMP,
+    ITEM_SCREW_ATTACK,
+    ITEM_CHARGE_BEAM,
+    ITEM_ICE_BEAM,
+    ITEM_WAVE_BEAM,
+    ITEM_SPAZER_BEAM,
+    ITEM_PLASMA_BEAM,
+    ITEM_GRAPPLE,
+    ITEM_XRAY,
+    ITEM_RESERVE_TANK,
+    ITEM_TYPE_COUNT
+} ItemTypeID;
+
+/* Item instance data */
+typedef struct {
+    ItemTypeID type;
+    fx32 x;
+    fx32 y;
+    bool collected;
+} ItemData;
 
 /* ========================================================================
  * Equipment Bitfield

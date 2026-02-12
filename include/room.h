@@ -12,6 +12,7 @@
 
 #include "sm_types.h"
 #include "sm_config.h"
+#include "physics.h"
 
 /* Door connection data */
 typedef struct {
@@ -58,6 +59,13 @@ typedef struct {
     EnemySpawnData spawns[MAX_ENEMIES];
     uint8_t  spawn_count;
 
+    /* Items */
+    ItemData items[MAX_ITEMS];
+    uint8_t  item_count;
+
+    /* Crumble block timers (parallel to collision array) */
+    uint8_t  crumble_timer[MAX_ROOM_WIDTH_TILES * MAX_ROOM_HEIGHT_TILES];
+
     /* Scroll bounds (pixels, 0 if room fits on one screen) */
     int scroll_max_x;
     int scroll_max_y;
@@ -79,6 +87,18 @@ uint8_t room_get_collision(int tile_x, int tile_y);
 
 /* O(1) BTS query. Returns 0 for out-of-bounds. */
 uint8_t room_get_bts(int tile_x, int tile_y);
+
+/* O(1) set collision type at runtime (for breakable blocks) */
+void    room_set_collision(int tile_x, int tile_y, uint8_t new_type);
+
+/* Check if body overlaps any door. Returns DoorData* or NULL. */
+const DoorData* room_check_door_collision(const PhysicsBody* body);
+
+/* Check if body overlaps an item. Grants it if so. Returns item type or ITEM_NONE. */
+ItemTypeID room_check_item_pickup(const PhysicsBody* body);
+
+/* Update crumble block timers. Call once per frame during gameplay. */
+void    room_update_crumble_blocks(void);
 
 /* Upload current room tilemap/tileset/palette to VRAM */
 void    room_upload_to_vram(void);

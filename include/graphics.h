@@ -48,4 +48,9 @@ void graphics_set_sprite(int oam_idx, int x, int y, int tile_id,
 /* Hide a specific sprite */
 void graphics_hide_sprite(int oam_idx);
 
+/* Screen brightness control for fades.
+ * level: -16 (black) to 0 (normal) to +16 (white) */
+void graphics_set_brightness(int level);
+void graphics_set_brightness_sub(int level);
+
 #endif /* GRAPHICS_H */

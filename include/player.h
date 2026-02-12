@@ -77,5 +77,6 @@ void player_init(void);
 void player_update(void);
 void player_render(void);
 void player_damage(int16_t damage);
+void player_damage_from(int16_t damage, fx32 source_x);
 
 #endif /* PLAYER_H */
