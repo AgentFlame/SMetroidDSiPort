@@ -42,6 +42,12 @@ env/
 *.fig
 *.mgd
 
+# ROM files directory
+roms/
+
+# Extracted raw assets (generated from ROM)
+assets_raw/
+
 # Debug and testing
 *.log
 test_output/

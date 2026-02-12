@@ -1,93 +1,123 @@
-# tools/tile_converter.py
-#
-# This script will be responsible for converting Super Metroid SNES graphics
-# data into a DSi-compatible format.
-#
-# Phase 2.1: Graphics Conversion
-# Goal: Convert SNES tile data (8x8 2bpp/4bpp) to DSi tile data (8x8 4bpp)
-#
-# The Super Metroid SNES ROM contains graphics data in various formats,
-# typically 2bpp or 4bpp, using 8x8 pixel tiles. The DSi primarily uses
-# 4bpp or 8bpp tiles. For this project, we'll aim for 4bpp DSi tiles.
-#
-# Key considerations:
-# - SNES tiles can be 2bpp or 4bpp. DSi will use 4bpp.
-# - SNES palettes (15-bit RGB) need to be converted to DSi palettes (15-bit BGR).
-# - Tile mapping and VRAM organization for DSi.
-#
-# This script will initially focus on a simple tile conversion.
-# More advanced features like palette conversion and tilemap generation
-# will be added in subsequent steps.
+#!/usr/bin/env python3
+"""
+tile_converter.py - Convert SNES 4bpp planar tiles to DS 4bpp linear format
+
+SNES 4bpp planar format (32 bytes per 8x8 tile):
+  Bytes 0-1:   Row 0, bitplanes 0-1 (interleaved pair)
+  Bytes 2-3:   Row 1, bitplanes 0-1
+  ...
+  Bytes 14-15: Row 7, bitplanes 0-1
+  Bytes 16-17: Row 0, bitplanes 2-3 (interleaved pair)
+  Bytes 18-19: Row 1, bitplanes 2-3
+  ...
+  Bytes 30-31: Row 7, bitplanes 2-3
+
+DS 4bpp linear format (32 bytes per 8x8 tile):
+  Each byte holds 2 pixels (low nibble = even pixel, high nibble = odd pixel)
+  4 bytes per row, 32 bytes per tile
+"""
 
 import argparse
-import os
+import sys
 
 
-
-
-def snes_4bpp_to_4bpp_dsi_tile(snes_4bpp_tile_data):
+def snes_4bpp_to_ds_4bpp_tile(snes_data):
     """
-    Converts a single 8x8 SNES 4bpp tile to an 8x8 DSi 4bpp tile.
-    Assumes standard SNES 4bpp planar format (32 bytes) as input.
-    Outputs standard DSi 4bpp interleaved pixel format (32 bytes).
+    Convert a single 8x8 SNES 4bpp planar tile to DS 4bpp linear format.
+
+    Args:
+        snes_data: 32-byte bytearray/bytes containing SNES tile data
+
+    Returns:
+        32-byte bytearray containing DS tile data
     """
-    if len(snes_4bpp_tile_data) != 32:
-        raise ValueError("SNES 4bpp tile data must be 32 bytes.")
+    if len(snes_data) != 32:
+        raise ValueError(f"SNES 4bpp tile must be 32 bytes, got {len(snes_data)}")
 
-    dsi_4bpp_tile_data = bytearray(32)
+    ds_data = bytearray(32)
 
-    for y_pixel in range(8):
-        for x_pixel in range(8):
-            bit_pos = 7 - x_pixel # SNES bits are MSB to LSB for pixels in a byte
+    for y in range(8):
+        # Read bitplane pairs for this row (CORRECT interleaved format)
+        b0 = snes_data[y * 2 + 0]   # Bitplane 0
+        b1 = snes_data[y * 2 + 1]   # Bitplane 1
+        b2 = snes_data[y * 2 + 16]  # Bitplane 2
+        b3 = snes_data[y * 2 + 17]  # Bitplane 3
 
-            b0 = (snes_4bpp_tile_data[y_pixel] >> bit_pos) & 1
-            b1 = (snes_4bpp_tile_data[y_pixel + 8] >> bit_pos) & 1
-            b2 = (snes_4bpp_tile_data[y_pixel + 16] >> bit_pos) & 1
-            b3 = (snes_4bpp_tile_data[y_pixel + 24] >> bit_pos) & 1
+        # Extract pixels for this row (MSB to LSB = left to right)
+        for x in range(8):
+            bit_pos = 7 - x  # MSB first
 
-            dsi_pixel_value = (b3 << 3) | (b2 << 2) | (b1 << 1) | b0
+            # Combine bitplanes to form 4-bit pixel value
+            pixel = (((b3 >> bit_pos) & 1) << 3) | \
+                    (((b2 >> bit_pos) & 1) << 2) | \
+                    (((b1 >> bit_pos) & 1) << 1) | \
+                    (((b0 >> bit_pos) & 1) << 0)
 
-            dsi_byte_idx = (y_pixel * 8 + x_pixel) // 2
-            if (y_pixel * 8 + x_pixel) % 2 == 0:  # Even pixel, low nibble
-                dsi_4bpp_tile_data[dsi_byte_idx] = (dsi_pixel_value & 0xF)
-            else:  # Odd pixel, high nibble
-                dsi_4bpp_tile_data[dsi_byte_idx] |= ((dsi_pixel_value & 0xF) << 4)
-    
-    return dsi_4bpp_tile_data
+            # Write to DS linear format (2 pixels per byte)
+            ds_byte_idx = y * 4 + x // 2
+            if x % 2 == 0:
+                # Even pixel: low nibble
+                ds_data[ds_byte_idx] = pixel & 0x0F
+            else:
+                # Odd pixel: high nibble
+                ds_data[ds_byte_idx] |= (pixel & 0x0F) << 4
 
-def convert_tiles_from_file(input_file_path, output_file_path, tile_size=32):
+    return ds_data
+
+
+def convert_tiles(input_path, output_path, tile_size=32):
     """
-    Reads SNES tile data from an input file and converts it to DSi format.
-    Assumes each `tile_size` chunk from input is one SNES tile.
+    Convert a file of SNES tiles to DS format.
+
+    Args:
+        input_path: Path to input file containing SNES tile data
+        output_path: Path to output file for DS tile data
+        tile_size: Size of each tile in bytes (default 32 for 4bpp)
     """
-    with open(input_file_path, 'rb') as infile:
-        snes_data = infile.read()
+    with open(input_path, 'rb') as f:
+        snes_data = f.read()
 
-    dsi_data = bytearray()
+    if len(snes_data) % tile_size != 0:
+        print(f"Warning: Input file size ({len(snes_data)} bytes) is not a multiple of tile_size ({tile_size})",
+              file=sys.stderr)
 
-    for i in range(0, len(snes_data), tile_size):
-        snes_tile = snes_data[i:i+tile_size]
+    ds_data = bytearray()
+    tile_count = 0
+
+    for offset in range(0, len(snes_data), tile_size):
+        snes_tile = snes_data[offset:offset + tile_size]
+
         if len(snes_tile) == tile_size:
-            # Assuming 4bpp SNES for now, as 32 bytes is typical for it.
-            dsi_tile = snes_4bpp_to_4bpp_dsi_tile(snes_tile)
-            dsi_data.extend(dsi_tile)
+            ds_tile = snes_4bpp_to_ds_4bpp_tile(snes_tile)
+            ds_data.extend(ds_tile)
+            tile_count += 1
         else:
-            print(f"Warning: Partial tile at offset {i}, skipping.")
+            print(f"Warning: Partial tile at offset {offset} ({len(snes_tile)} bytes), skipping",
+                  file=sys.stderr)
 
-    with open(output_file_path, 'wb') as outfile:
-        outfile.write(dsi_data)
+    with open(output_path, 'wb') as f:
+        f.write(ds_data)
+
+    print(f"Converted {tile_count} tiles from '{input_path}' to '{output_path}'")
+
 
 def main():
-    parser = argparse.ArgumentParser(description="Convert Super Metroid SNES tile data to DSi format.")
-    parser.add_argument("input_file", help="Path to the input file containing SNES tile data.")
-    parser.add_argument("output_file", help="Path for the output file to store DSi tile data.")
+    parser = argparse.ArgumentParser(
+        description="Convert SNES 4bpp planar tiles to DS 4bpp linear format"
+    )
+    parser.add_argument("input_file", help="Input file containing SNES tile data")
+    parser.add_argument("output_file", help="Output file for DS tile data")
     parser.add_argument("--tile_size", type=int, default=32,
-                        help="Size of each SNES tile in bytes (e.g., 16 for 2bpp, 32 for 4bpp).")
-    
+                        help="Size of each tile in bytes (default: 32 for 4bpp)")
+
     args = parser.parse_args()
 
-    convert_tiles_from_file(args.input_file, args.output_file, args.tile_size)
-    print(f"Successfully converted tiles from '{args.input_file}' to '{args.output_file}'.")
+    try:
+        convert_tiles(args.input_file, args.output_file, args.tile_size)
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
 
 if __name__ == "__main__":
     main()

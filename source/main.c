@@ -1,9 +1,9 @@
 /**
  * main.c - Super Metroid DS entry point
  *
- * M0-M13, M16 skeleton: fixed-point math, input, state manager, graphics,
+ * M0-M16 skeleton: fixed-point math, input, state manager, graphics,
  * room loading, physics engine, player state machine, camera, enemies,
- * projectiles, bosses (Spore Spawn, Crocomire, Bomb Torizo), HUD.
+ * projectiles, bosses (all 10), HUD, audio system, save system.
  */
 
 #include <nds.h>
@@ -916,6 +916,145 @@ static void run_player_tests(void) {
 }
 
 /* ========================================================================
+ * M14: Audio System Tests
+ * ======================================================================== */
+
+static void run_audio_tests(void) {
+    iprintf("--- Audio Tests ---\n");
+    int pre_passed = tests_passed;
+    int pre_total = tests_total;
+
+    /* Test 1: init sets no music */
+    audio_init();
+    test("aud_init_none", audio_get_current_music() == MUSIC_NONE);
+
+    /* Test 2: play music changes state */
+    audio_play_music(MUSIC_TITLE);
+    test("aud_play_title", audio_get_current_music() == MUSIC_TITLE);
+
+    /* Test 3: same music is a no-op */
+    audio_play_music(MUSIC_TITLE);
+    test("aud_same_noop", audio_get_current_music() == MUSIC_TITLE);
+
+    /* Test 4: switch music */
+    audio_play_music(MUSIC_CRATERIA_SURFACE);
+    test("aud_switch", audio_get_current_music() == MUSIC_CRATERIA_SURFACE);
+
+    /* Test 5: stop music */
+    audio_stop_music();
+    test("aud_stop", audio_get_current_music() == MUSIC_NONE);
+
+    /* Test 6: stop when already stopped is safe */
+    audio_stop_music();
+    test("aud_stop2", audio_get_current_music() == MUSIC_NONE);
+
+    /* Test 7: SFX calls don't crash */
+    audio_play_sfx(SFX_BEAM);
+    audio_play_sfx(SFX_JUMP);
+    audio_play_sfx(SFX_NONE);
+    test("aud_sfx_ok", true);
+
+    /* Test 8: invalid IDs handled */
+    audio_play_music(MUSIC_NONE);
+    test("aud_none_ok", audio_get_current_music() == MUSIC_NONE);
+
+    /* Cleanup */
+    audio_init();
+
+    iprintf("%d/%d audio OK\n",
+            tests_passed - pre_passed,
+            tests_total - pre_total);
+}
+
+/* ========================================================================
+ * M15: Save System Tests
+ * ======================================================================== */
+
+static void run_save_tests(void) {
+    iprintf("--- Save Tests ---\n");
+    int pre_passed = tests_passed;
+    int pre_total = tests_total;
+
+    save_init();
+
+    /* Test 1: empty slot is invalid */
+    save_delete(0);
+    test("sv_empty_inv", !save_slot_valid(0));
+
+    /* Test 2: write and validate */
+    SaveData wd;
+    memset(&wd, 0, sizeof(SaveData));
+    wd.hp = 99;
+    wd.hp_max = 99;
+    wd.missiles = 5;
+    wd.missiles_max = 5;
+    wd.area_id = 0;
+    wd.save_station_id = 0;
+    wd.equipment = EQUIP_MORPH_BALL | EQUIP_BOMBS;
+    wd.boss_flags = BOSS_FLAG_BOMB_TORIZO | BOSS_FLAG_KRAID;
+    wd.time_hours = 1;
+    wd.time_minutes = 30;
+    wd.time_seconds = 45;
+    wd.time_frames = 30;
+
+    bool wrote = save_write(0, &wd);
+    test("sv_write_ok", wrote);
+    test("sv_valid", save_slot_valid(0));
+
+    /* Test 3: read back and verify */
+    SaveData rd;
+    memset(&rd, 0, sizeof(SaveData));
+    bool read_ok = save_read(0, &rd);
+    test("sv_read_ok", read_ok);
+    test("sv_hp=99", rd.hp == 99);
+    test("sv_miss=5", rd.missiles == 5);
+    test("sv_equip", rd.equipment == (EQUIP_MORPH_BALL | EQUIP_BOMBS));
+    test("sv_time_h=1", rd.time_hours == 1);
+    test("sv_time_m=30", rd.time_minutes == 30);
+    test("sv_bosses", rd.boss_flags == (BOSS_FLAG_BOMB_TORIZO | BOSS_FLAG_KRAID));
+
+    /* Test 4: delete makes slot invalid */
+    save_delete(0);
+    test("sv_del_inv", !save_slot_valid(0));
+
+    /* Test 5: read from deleted slot fails */
+    bool read_del = save_read(0, &rd);
+    test("sv_read_del", !read_del);
+
+    /* Test 6: out-of-range slot handling */
+    test("sv_oob_neg", !save_write(-1, &wd));
+    test("sv_oob_high", !save_write(3, &wd));
+    test("sv_oob_valid", !save_slot_valid(-1));
+    test("sv_oob_valid2", !save_slot_valid(3));
+
+    /* Test 7: multiple slots independent */
+    SaveData s1, s2;
+    memset(&s1, 0, sizeof(SaveData));
+    memset(&s2, 0, sizeof(SaveData));
+    s1.hp = 50;
+    s2.hp = 200;
+    save_write(0, &s1);
+    save_write(1, &s2);
+    test("sv_slot0_v", save_slot_valid(0));
+    test("sv_slot1_v", save_slot_valid(1));
+
+    SaveData r1, r2;
+    save_read(0, &r1);
+    save_read(1, &r2);
+    test("sv_slot0_hp", r1.hp == 50);
+    test("sv_slot1_hp", r2.hp == 200);
+
+    /* Cleanup: delete test data */
+    save_delete(0);
+    save_delete(1);
+    save_delete(2);
+
+    iprintf("%d/%d save OK\n",
+            tests_passed - pre_passed,
+            tests_total - pre_total);
+}
+
+/* ========================================================================
  * Gameplay State Handlers
  * ======================================================================== */
 
@@ -1059,12 +1198,14 @@ int main(int argc, char* argv[]) {
 
     iprintf("=========================\n");
     iprintf("  Super Metroid DS Port\n");
-    iprintf("  M0-M13, M16 Build\n");
+    iprintf("  M0-M16 Build\n");
     iprintf("=========================\n\n");
 
     /* Initialize subsystems */
     room_init();
     camera_init();
+    audio_init();
+    save_init();
 
     /* Run tests */
     tests_passed = 0;
@@ -1077,6 +1218,8 @@ int main(int argc, char* argv[]) {
     run_projectile_tests();
     run_boss_tests();
     run_player_tests();
+    run_audio_tests();
+    run_save_tests();
 
     /* Initialize state manager */
     state_init();
@@ -1094,7 +1237,7 @@ int main(int argc, char* argv[]) {
     iprintf("A=gameplay SELECT=boss\n");
     iprintf("X=title START=exit\n\n");
 
-    fprintf(stderr, "SuperMetroidDS: M0-M13,M16 boot, %d/%d tests\n",
+    fprintf(stderr, "SuperMetroidDS: M0-M16 boot, %d/%d tests\n",
             tests_passed, tests_total);
 
     /* Main loop */
