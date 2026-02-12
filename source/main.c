@@ -707,6 +707,64 @@ static void run_boss_tests(void) {
     }
     test("kr_dead", !boss_is_active());
 
+    /* --- Botwoon tests --- */
+
+    /* Test: spawn Botwoon */
+    boss_init();
+    boss_spawn(BOSS_BOTWOON, INT_TO_FX(128), INT_TO_FX(96));
+    test("bot_active", boss_is_active());
+    test("bot_hp=3000", g_boss.hp == 3000);
+    test("bot_type", g_boss.type == BOSS_BOTWOON);
+    test("bot_hidden", g_boss.ai_state == 0); /* BOT_HIDDEN */
+
+    /* Test: damage when vulnerable */
+    g_boss.vulnerable = true;
+    boss_damage(100);
+    test("bot_dmg", g_boss.hp == 2900);
+
+    /* Test: kill Botwoon */
+    boss_init();
+    boss_spawn(BOSS_BOTWOON, INT_TO_FX(128), INT_TO_FX(96));
+    g_boss.vulnerable = true;
+    g_boss.hp = 10;
+    boss_damage(20);
+    test("bot_hp0", g_boss.hp <= 0);
+    for (int f = 0; f < 200; f++) {
+        boss_update();
+        if (!boss_is_active()) break;
+    }
+    test("bot_dead", !boss_is_active());
+
+    /* --- Phantoon tests --- */
+
+    /* Test: spawn Phantoon */
+    boss_init();
+    boss_spawn(BOSS_PHANTOON, INT_TO_FX(128), INT_TO_FX(80));
+    test("ph_active", boss_is_active());
+    test("ph_hp=2500", g_boss.hp == 2500);
+    test("ph_invis", g_boss.ai_state == 0); /* PH_INVISIBLE */
+    test("ph_not_vuln", g_boss.vulnerable == false);
+
+    /* Test: super missile triggers rage */
+    g_boss.vulnerable = true;
+    g_boss.ai_state = 2; /* PH_VISIBLE */
+    boss_damage(300);  /* Super missile damage */
+    test("ph_rage", g_boss.param_b != 0);
+    test("ph_dmg", g_boss.hp == 2200);
+
+    /* Test: kill Phantoon */
+    boss_init();
+    boss_spawn(BOSS_PHANTOON, INT_TO_FX(128), INT_TO_FX(80));
+    g_boss.vulnerable = true;
+    g_boss.hp = 10;
+    boss_damage(20);
+    test("ph_hp0", g_boss.hp <= 0);
+    for (int f = 0; f < 200; f++) {
+        boss_update();
+        if (!boss_is_active()) break;
+    }
+    test("ph_dead", !boss_is_active());
+
     /* Cleanup */
     boss_init();
 
@@ -860,7 +918,7 @@ static void gameplay_update(void) {
         }
         boss_spawn(next_boss, spawn_x, spawn_y);
         next_boss++;
-        if (next_boss > BOSS_KRAID) {
+        if (next_boss > BOSS_PHANTOON) {
             next_boss = BOSS_SPORE_SPAWN;
         }
     }

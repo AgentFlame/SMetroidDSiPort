@@ -9,6 +9,8 @@
  *   Crocomire    - Push mechanic (no HP kill), advances/retreats, spit/lunge
  *   Bomb Torizo  - 800 HP, statue wake, bomb throw, lunge attack
  *   Kraid        - 1000 HP, mouth-only vulnerability, fingernails, belly spikes
+ *   Botwoon      - 3000 HP, emerge/spit from holes, serpentine snake phase
+ *   Phantoon     - 2500 HP, visibility cycle, flame attacks, super missile rage
  *
  * Boss-specific param usage:
  *   Spore Spawn:
@@ -828,6 +830,416 @@ static void kraid_update(void) {
 }
 
 /* ========================================================================
+ * Botwoon AI
+ *
+ * 3000 HP snake boss. Moves in a sinusoidal pattern, poking head
+ * out of holes to spit projectiles. Only head is vulnerable.
+ *
+ * Behavior:
+ *   1. HIDDEN:  Head retracted, choosing next hole
+ *   2. EMERGE:  Head pokes out of a wall hole
+ *   3. SPIT:    Fires projectiles at player
+ *   4. RETREAT: Head retracts
+ *   5. SNAKE:   Rapid serpentine movement across room (phase 2)
+ *   6. DEATH:   Collapse
+ *
+ * Boss-specific param usage:
+ *   param_a     = sine angle for snake movement
+ *   param_b     = hole index (0-3, which side/position head emerges from)
+ *   anchor_x    = room center X (for snake patrol)
+ *   anchor_y    = room center Y
+ *   sub_timer   = emerge count per cycle
+ *   attack_count = total emerges before snake phase
+ * ======================================================================== */
+
+/* Botwoon AI states */
+enum {
+    BOT_HIDDEN = 0,
+    BOT_EMERGE,
+    BOT_SPIT,
+    BOT_RETREAT,
+    BOT_SNAKE,
+    BOT_DEATH
+};
+
+/* Botwoon constants */
+#define BOT_HP                 3000
+#define BOT_CONTACT_DAMAGE     30
+#define BOT_HITBOX_HALF_W      INT_TO_FX(10)
+#define BOT_HITBOX_HALF_H      INT_TO_FX(10)
+#define BOT_HIDDEN_FRAMES      45
+#define BOT_EMERGE_FRAMES      20
+#define BOT_SPIT_FRAMES        30
+#define BOT_RETREAT_FRAMES     15
+#define BOT_SPIT_SPEED         INT_TO_FX(3)
+#define BOT_SNAKE_SPEED        INT_TO_FX(2)
+#define BOT_SNAKE_AMPLITUDE    INT_TO_FX(40)
+#define BOT_SNAKE_FREQ         4          /* LUT units per frame */
+#define BOT_SNAKE_FRAMES       180        /* ~3 sec snake phase */
+#define BOT_EMERGE_PER_CYCLE   4          /* Emerges before snake phase */
+#define BOT_DEATH_FRAMES       60
+
+/* Hole positions (relative to room center) */
+static const int16_t bot_hole_offsets[4][2] = {
+    { -60, -30 },  /* Top-left */
+    {  60, -30 },  /* Top-right */
+    { -60,  30 },  /* Bottom-left */
+    {  60,  30 },  /* Bottom-right */
+};
+
+static void botwoon_init(void) {
+    g_boss.hp = BOT_HP;
+    g_boss.hp_max = BOT_HP;
+    g_boss.damage_contact = BOT_CONTACT_DAMAGE;
+    g_boss.body.hitbox.half_w = BOT_HITBOX_HALF_W;
+    g_boss.body.hitbox.half_h = BOT_HITBOX_HALF_H;
+    g_boss.vulnerable = false;
+    g_boss.ai_state = BOT_HIDDEN;
+    g_boss.ai_timer = 0;
+    g_boss.ai_counter = 0;
+    g_boss.sub_timer = 0;
+    g_boss.attack_count = 0;
+    g_boss.param_a = 0;
+    g_boss.param_b = 0;
+
+    /* Remember room center */
+    g_boss.anchor_x = g_boss.body.pos.x;
+    g_boss.anchor_y = g_boss.body.pos.y;
+}
+
+static void botwoon_update(void) {
+    Boss* b = &g_boss;
+
+    if (b->invuln_timer > 0) b->invuln_timer--;
+
+    switch (b->ai_state) {
+        case BOT_HIDDEN: {
+            b->ai_timer++;
+            if (b->ai_timer >= BOT_HIDDEN_FRAMES) {
+                /* Pick next hole based on counter */
+                int hole = b->ai_counter & 3;
+                b->param_b = INT_TO_FX(hole);
+                b->body.pos.x = b->anchor_x +
+                                INT_TO_FX(bot_hole_offsets[hole][0]);
+                b->body.pos.y = b->anchor_y +
+                                INT_TO_FX(bot_hole_offsets[hole][1]);
+                b->ai_state = BOT_EMERGE;
+                b->ai_timer = 0;
+            }
+            break;
+        }
+
+        case BOT_EMERGE: {
+            b->ai_timer++;
+            if (b->ai_timer >= BOT_EMERGE_FRAMES) {
+                b->ai_state = BOT_SPIT;
+                b->ai_timer = 0;
+                b->vulnerable = true;
+            }
+            break;
+        }
+
+        case BOT_SPIT: {
+            /* Fire on first frame */
+            if (b->ai_timer == 0) {
+                fx32 dx = g_player.body.pos.x - b->body.pos.x;
+                fx32 dy = g_player.body.pos.y - b->body.pos.y;
+                fx32 vx = (dx > 0) ? BOT_SPIT_SPEED : -BOT_SPIT_SPEED;
+                fx32 vy = (dy > 0) ? (BOT_SPIT_SPEED >> 1) :
+                                     -(BOT_SPIT_SPEED >> 1);
+                projectile_spawn(PROJ_ENEMY_BULLET, PROJ_OWNER_ENEMY,
+                                b->body.pos.x, b->body.pos.y, vx, vy);
+            }
+
+            b->ai_timer++;
+            if (b->ai_timer >= BOT_SPIT_FRAMES) {
+                b->ai_state = BOT_RETREAT;
+                b->ai_timer = 0;
+                b->vulnerable = false;
+                b->sub_timer++;
+                b->ai_counter++;
+            }
+            break;
+        }
+
+        case BOT_RETREAT: {
+            b->ai_timer++;
+            if (b->ai_timer >= BOT_RETREAT_FRAMES) {
+                /* After enough emerges, do snake movement */
+                if (b->sub_timer >= BOT_EMERGE_PER_CYCLE) {
+                    b->ai_state = BOT_SNAKE;
+                    b->ai_timer = 0;
+                    b->param_a = 0;
+                    b->sub_timer = 0;
+                    b->vulnerable = true;
+                } else {
+                    b->ai_state = BOT_HIDDEN;
+                    b->ai_timer = 0;
+                }
+            }
+            break;
+        }
+
+        case BOT_SNAKE: {
+            /* Serpentine movement across room */
+            b->param_a += INT_TO_FX(BOT_SNAKE_FREQ);
+            uint8_t angle = (uint8_t)FX_TO_INT(b->param_a);
+
+            /* Horizontal sweep + sine vertical */
+            fx32 progress = fx_div(INT_TO_FX(b->ai_timer),
+                                   INT_TO_FX(BOT_SNAKE_FRAMES));
+            /* Sweep left to right and back */
+            fx32 sweep_x;
+            if (b->ai_timer < BOT_SNAKE_FRAMES / 2) {
+                sweep_x = b->anchor_x - INT_TO_FX(60) +
+                          fx_mul(INT_TO_FX(120), progress << 1);
+            } else {
+                fx32 rev = FX_ONE - ((progress - FX_HALF) << 1);
+                sweep_x = b->anchor_x - INT_TO_FX(60) +
+                          fx_mul(INT_TO_FX(120), rev);
+            }
+            b->body.pos.x = sweep_x;
+            b->body.pos.y = b->anchor_y +
+                            fx_mul(fx_sin(angle), BOT_SNAKE_AMPLITUDE);
+
+            b->ai_timer++;
+            if (b->ai_timer >= BOT_SNAKE_FRAMES) {
+                b->ai_state = BOT_HIDDEN;
+                b->ai_timer = 0;
+                b->vulnerable = false;
+            }
+            break;
+        }
+
+        case BOT_DEATH: {
+            b->ai_timer++;
+            if (b->ai_timer >= BOT_DEATH_FRAMES) {
+                b->active = false;
+            }
+            break;
+        }
+    }
+
+    /* Contact damage (only when visible) */
+    if (b->active && b->ai_state != BOT_HIDDEN && b->ai_state != BOT_DEATH) {
+        if (boss_aabb_overlap(b->body.pos, b->body.hitbox,
+                              g_player.body.pos, g_player.body.hitbox)) {
+            player_damage(b->damage_contact);
+        }
+    }
+}
+
+/* ========================================================================
+ * Phantoon AI
+ *
+ * 2500 HP ghost boss. Cycles between invisible and visible. Only
+ * vulnerable when visible (eye open). Enrages if hit with super missile
+ * (faster, more flames).
+ *
+ * Behavior:
+ *   1. INVISIBLE:  Floating off-screen, invulnerable
+ *   2. FADE_IN:    Becoming visible (20 frames)
+ *   3. VISIBLE:    Eye open — VULNERABLE, attacking with flame circles
+ *   4. FADE_OUT:   Becoming invisible (20 frames)
+ *   5. RAGE:       Enraged mode (faster attacks, more flames)
+ *   6. DEATH:      Fade away
+ *
+ * Boss-specific param usage:
+ *   param_a     = float angle (sine-based hover)
+ *   param_b     = rage flag (0 = normal, 1 = enraged)
+ *   anchor_x    = center X of patrol area
+ *   anchor_y    = center Y of patrol area
+ *   sub_timer   = flame attack cooldown
+ *   attack_count = flames fired this cycle
+ * ======================================================================== */
+
+/* Phantoon AI states */
+enum {
+    PH_INVISIBLE = 0,
+    PH_FADE_IN,
+    PH_VISIBLE,
+    PH_FADE_OUT,
+    PH_RAGE,
+    PH_DEATH
+};
+
+/* Phantoon constants */
+#define PH_HP                  2500
+#define PH_CONTACT_DAMAGE      30
+#define PH_HITBOX_HALF_W       INT_TO_FX(16)
+#define PH_HITBOX_HALF_H       INT_TO_FX(16)
+#define PH_INVIS_FRAMES        90           /* Time spent invisible */
+#define PH_FADE_FRAMES         20
+#define PH_VISIBLE_FRAMES      120          /* ~2 sec visible */
+#define PH_RAGE_FRAMES         180          /* ~3 sec rage */
+#define PH_FLAME_INTERVAL      30           /* Normal flame rate */
+#define PH_RAGE_FLAME_INTERVAL 15           /* Rage flame rate */
+#define PH_FLAME_SPEED         INT_TO_FX(2)
+#define PH_RAGE_FLAME_SPEED    INT_TO_FX(3)
+#define PH_FLOAT_SPEED         3            /* LUT angle units per frame */
+#define PH_FLOAT_AMPLITUDE     INT_TO_FX(20)
+#define PH_HOVER_SPEED         0x8000       /* 0.5 px/f drift */
+#define PH_DEATH_FRAMES        60
+#define PH_FLAMES_PER_CYCLE    4
+#define PH_RAGE_FLAMES         8
+
+static void phantoon_init(void) {
+    g_boss.hp = PH_HP;
+    g_boss.hp_max = PH_HP;
+    g_boss.damage_contact = PH_CONTACT_DAMAGE;
+    g_boss.body.hitbox.half_w = PH_HITBOX_HALF_W;
+    g_boss.body.hitbox.half_h = PH_HITBOX_HALF_H;
+    g_boss.vulnerable = false;
+    g_boss.ai_state = PH_INVISIBLE;
+    g_boss.ai_timer = 0;
+    g_boss.ai_counter = 0;
+    g_boss.sub_timer = 0;
+    g_boss.attack_count = 0;
+    g_boss.param_a = 0;
+    g_boss.param_b = 0;  /* Not enraged */
+
+    g_boss.anchor_x = g_boss.body.pos.x;
+    g_boss.anchor_y = g_boss.body.pos.y;
+}
+
+static void phantoon_update(void) {
+    Boss* b = &g_boss;
+
+    if (b->invuln_timer > 0) b->invuln_timer--;
+
+    /* Hover float (applies during visible/rage states) */
+    if (b->ai_state == PH_VISIBLE || b->ai_state == PH_RAGE) {
+        b->param_a += INT_TO_FX(PH_FLOAT_SPEED);
+        uint8_t angle = (uint8_t)FX_TO_INT(b->param_a);
+        b->body.pos.y = b->anchor_y +
+                        fx_mul(fx_sin(angle), PH_FLOAT_AMPLITUDE);
+
+        /* Drift toward player X */
+        fx32 dx = g_player.body.pos.x - b->body.pos.x;
+        if (dx > 0) {
+            b->body.pos.x += PH_HOVER_SPEED;
+        } else if (dx < 0) {
+            b->body.pos.x -= PH_HOVER_SPEED;
+        }
+    }
+
+    switch (b->ai_state) {
+        case PH_INVISIBLE: {
+            b->ai_timer++;
+            if (b->ai_timer >= PH_INVIS_FRAMES) {
+                b->ai_state = PH_FADE_IN;
+                b->ai_timer = 0;
+                /* Reposition near player */
+                b->body.pos.x = g_player.body.pos.x + INT_TO_FX(40);
+                b->body.pos.y = g_player.body.pos.y - INT_TO_FX(32);
+                b->anchor_y = b->body.pos.y;
+            }
+            break;
+        }
+
+        case PH_FADE_IN: {
+            b->ai_timer++;
+            if (b->ai_timer >= PH_FADE_FRAMES) {
+                /* Enter rage or normal visible depending on flag */
+                if (b->param_b != 0) {
+                    b->ai_state = PH_RAGE;
+                } else {
+                    b->ai_state = PH_VISIBLE;
+                }
+                b->ai_timer = 0;
+                b->vulnerable = true;
+                b->sub_timer = 0;
+                b->attack_count = 0;
+                b->param_a = 0;
+            }
+            break;
+        }
+
+        case PH_VISIBLE: {
+            b->ai_timer++;
+            b->sub_timer++;
+
+            /* Shoot flames periodically */
+            if (b->sub_timer >= PH_FLAME_INTERVAL &&
+                b->attack_count < PH_FLAMES_PER_CYCLE) {
+                b->sub_timer = 0;
+                b->attack_count++;
+                /* Flame aimed at player */
+                fx32 dx = g_player.body.pos.x - b->body.pos.x;
+                fx32 dy = g_player.body.pos.y - b->body.pos.y;
+                fx32 vx = (dx > 0) ? PH_FLAME_SPEED : -PH_FLAME_SPEED;
+                fx32 vy = (dy > 0) ? (PH_FLAME_SPEED >> 1) :
+                                     -(PH_FLAME_SPEED >> 1);
+                projectile_spawn(PROJ_ENEMY_BULLET, PROJ_OWNER_ENEMY,
+                                b->body.pos.x, b->body.pos.y, vx, vy);
+            }
+
+            if (b->ai_timer >= PH_VISIBLE_FRAMES) {
+                b->ai_state = PH_FADE_OUT;
+                b->ai_timer = 0;
+                b->vulnerable = false;
+            }
+            break;
+        }
+
+        case PH_FADE_OUT: {
+            b->ai_timer++;
+            if (b->ai_timer >= PH_FADE_FRAMES) {
+                b->ai_state = PH_INVISIBLE;
+                b->ai_timer = 0;
+            }
+            break;
+        }
+
+        case PH_RAGE: {
+            /* Same as visible but faster and more flames */
+            b->ai_timer++;
+            b->sub_timer++;
+
+            if (b->sub_timer >= PH_RAGE_FLAME_INTERVAL &&
+                b->attack_count < PH_RAGE_FLAMES) {
+                b->sub_timer = 0;
+                b->attack_count++;
+                /* Spread flame pattern */
+                fx32 dx = g_player.body.pos.x - b->body.pos.x;
+                fx32 vx = (dx > 0) ? PH_RAGE_FLAME_SPEED :
+                                     -PH_RAGE_FLAME_SPEED;
+                projectile_spawn(PROJ_ENEMY_BULLET, PROJ_OWNER_ENEMY,
+                                b->body.pos.x, b->body.pos.y,
+                                vx, -(PH_RAGE_FLAME_SPEED >> 1));
+                projectile_spawn(PROJ_ENEMY_BULLET, PROJ_OWNER_ENEMY,
+                                b->body.pos.x, b->body.pos.y,
+                                vx, PH_RAGE_FLAME_SPEED >> 1);
+            }
+
+            if (b->ai_timer >= PH_RAGE_FRAMES) {
+                b->ai_state = PH_FADE_OUT;
+                b->ai_timer = 0;
+                b->vulnerable = false;
+            }
+            break;
+        }
+
+        case PH_DEATH: {
+            b->ai_timer++;
+            if (b->ai_timer >= PH_DEATH_FRAMES) {
+                b->active = false;
+            }
+            break;
+        }
+    }
+
+    /* Contact damage (only when visible/rage) */
+    if (b->active &&
+        (b->ai_state == PH_VISIBLE || b->ai_state == PH_RAGE)) {
+        if (boss_aabb_overlap(b->body.pos, b->body.hitbox,
+                              g_player.body.pos, g_player.body.hitbox)) {
+            player_damage(b->damage_contact);
+        }
+    }
+}
+
+/* ========================================================================
  * AI Dispatch Tables
  * ======================================================================== */
 
@@ -839,6 +1251,8 @@ static const BossInitFn boss_init_fns[BOSS_TYPE_COUNT] = {
     [BOSS_CROCOMIRE]    = crocomire_init,
     [BOSS_BOMB_TORIZO]  = bomb_torizo_init,
     [BOSS_KRAID]        = kraid_init,
+    [BOSS_BOTWOON]      = botwoon_init,
+    [BOSS_PHANTOON]     = phantoon_init,
 };
 
 static const BossUpdateFn boss_update_fns[BOSS_TYPE_COUNT] = {
@@ -846,6 +1260,8 @@ static const BossUpdateFn boss_update_fns[BOSS_TYPE_COUNT] = {
     [BOSS_CROCOMIRE]    = crocomire_update,
     [BOSS_BOMB_TORIZO]  = bomb_torizo_update,
     [BOSS_KRAID]        = kraid_update,
+    [BOSS_BOTWOON]      = botwoon_update,
+    [BOSS_PHANTOON]     = phantoon_update,
 };
 
 /* ========================================================================
@@ -948,6 +1364,12 @@ void boss_damage(int16_t damage) {
         g_boss.vulnerable = false;
     }
 
+    /* Phantoon: super missile (damage >= 200) triggers rage mode */
+    if (g_boss.type == BOSS_PHANTOON && g_boss.hp > 0 &&
+        damage >= 200 && g_boss.param_b == 0) {
+        g_boss.param_b = FX_ONE;  /* Set rage flag */
+    }
+
     if (g_boss.hp <= 0) {
         g_boss.hp = 0;
         g_boss.vulnerable = false;
@@ -964,6 +1386,12 @@ void boss_damage(int16_t damage) {
                 break;
             case BOSS_KRAID:
                 g_boss.ai_state = KRAID_DEATH;
+                break;
+            case BOSS_BOTWOON:
+                g_boss.ai_state = BOT_DEATH;
+                break;
+            case BOSS_PHANTOON:
+                g_boss.ai_state = PH_DEATH;
                 break;
             default:
                 g_boss.active = false;
