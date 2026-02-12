@@ -2047,6 +2047,7 @@ typedef void (*BossInitFn)(void);
 typedef void (*BossUpdateFn)(void);
 
 static const BossInitFn boss_init_fns[BOSS_TYPE_COUNT] = {
+    [BOSS_NONE]           = NULL,
     [BOSS_SPORE_SPAWN]    = spore_spawn_init,
     [BOSS_CROCOMIRE]      = crocomire_init,
     [BOSS_BOMB_TORIZO]    = bomb_torizo_init,
@@ -2060,6 +2061,7 @@ static const BossInitFn boss_init_fns[BOSS_TYPE_COUNT] = {
 };
 
 static const BossUpdateFn boss_update_fns[BOSS_TYPE_COUNT] = {
+    [BOSS_NONE]           = NULL,
     [BOSS_SPORE_SPAWN]    = spore_spawn_update,
     [BOSS_CROCOMIRE]      = crocomire_update,
     [BOSS_BOMB_TORIZO]    = bomb_torizo_update,
@@ -2134,7 +2136,7 @@ void boss_render(void) {
     graphics_set_sprite(BOSS_OAM_START, sx, sy, 12, 3, 1, false, false);
 }
 
-void boss_damage(int16_t damage) {
+void boss_damage(int32_t damage) {
     if (!g_boss.active) return;
     if (!g_boss.vulnerable) return;
     if (g_boss.invuln_timer > 0) return;

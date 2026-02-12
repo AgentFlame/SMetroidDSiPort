@@ -80,6 +80,13 @@ static const ProjTypeDef proj_defs[PROJ_TYPE_COUNT] = {
     [PROJ_ENEMY_BULLET]  = {  10, INT_TO_FX(2),  120, INT_TO_FX(3), INT_TO_FX(3), false, false },
 };
 
+/* Solid tile test (matches physics.c is_collision_solid logic) */
+static inline bool tile_is_solid(uint8_t coll) {
+    if (coll == COLL_SOLID) return true;
+    if ((coll & 0xF0) == COLL_SPECIAL_BASE) return true;
+    return false;
+}
+
 /* ========================================================================
  * AABB Overlap Check
  * ======================================================================== */
@@ -296,7 +303,7 @@ void projectile_update_all(void) {
             int tile_x = FX_TO_INT(p->pos.x) >> TILE_SHIFT;
             int tile_y = FX_TO_INT(p->pos.y) >> TILE_SHIFT;
             uint8_t coll = room_get_collision(tile_x, tile_y);
-            if (coll == COLL_SOLID) {
+            if (tile_is_solid(coll)) {
                 p->active = false;
                 projectile_remove(i);
                 continue;

@@ -110,7 +110,12 @@ static bool update_door_transition(void) {
         }
 
         case TRANS_LOAD: {
-            gameplay_exit();
+            /* Clear entities for room change (NOT a full state exit --
+             * gameplay_initialized must stay true for pause/resume). */
+            enemy_clear_all();
+            projectile_clear_all();
+            boss_init();
+
             room_load(trans_door.dest_area, trans_door.dest_room);
 
             g_player.body.pos.x = INT_TO_FX(trans_door.spawn_x);
@@ -167,9 +172,17 @@ static bool update_door_transition(void) {
  * Gameplay State Handlers
  * ======================================================================== */
 
-static void gameplay_enter(void) {
-    consoleClear();
+static bool gameplay_initialized;
+static bool gameplay_pausing;
 
+static void gameplay_enter(void) {
+    /* Resume from pause: room already loaded, skip re-initialization */
+    if (gameplay_initialized && g_current_room.loaded) {
+        fprintf(stderr, "Gameplay: resumed from pause\n");
+        return;
+    }
+
+    consoleClear();
     player_init();
     camera_init();
     enemy_pool_init();
@@ -195,15 +208,25 @@ static void gameplay_enter(void) {
         }
     }
 
+    gameplay_initialized = true;
+
     fprintf(stderr, "Gameplay: room %d:%d enemies=%d\n",
             g_current_room.area_id, g_current_room.room_id,
             enemy_get_count());
 }
 
 static void gameplay_exit(void) {
+    /* When pausing, preserve all game state for seamless resume */
+    if (gameplay_pausing) {
+        gameplay_pausing = false;
+        return;
+    }
+
+    /* Full teardown for real state changes (death, ending, etc.) */
     enemy_clear_all();
     projectile_clear_all();
     boss_init();
+    gameplay_initialized = false;
 }
 
 static void gameplay_update(void) {
@@ -220,6 +243,7 @@ static void gameplay_update(void) {
 
     /* Pause */
     if (input_pressed(KEY_START) && g_player.alive) {
+        gameplay_pausing = true;
         state_set(STATE_PAUSE);
         return;
     }

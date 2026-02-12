@@ -24,15 +24,17 @@ void hud_update(void) {
 }
 
 void hud_render(void) {
+    /* Each line padded to 32 chars to clear stale console text */
+
     /* Row 0: HP and missiles */
     iprintf("\x1b[0;0H");
-    iprintf("HP:%4d/%-4d M:%3d/%-3d",
+    iprintf("HP:%4d/%-4d M:%3d/%-3d      ",
             g_player.hp, g_player.hp_max,
             g_player.missiles, g_player.missiles_max);
 
     /* Row 1: supers and power bombs */
     iprintf("\x1b[1;0H");
-    iprintf("S: %3d/%-3d PB:%3d/%-3d",
+    iprintf("S: %3d/%-3d PB:%3d/%-3d      ",
             g_player.supers, g_player.supers_max,
             g_player.power_bombs, g_player.power_bombs_max);
 
@@ -42,7 +44,7 @@ void hud_render(void) {
     uint32_t mins  = (total_secs / 60) % 60;
     uint32_t secs  = total_secs % 60;
     iprintf("\x1b[2;0H");
-    iprintf("TIME:%d:%02d:%02d  RM:%d:%d",
+    iprintf("TIME:%d:%02d:%02d  RM:%d:%d          ",
             (int)hours, (int)mins, (int)secs,
             g_current_room.area_id, g_current_room.room_id);
 }

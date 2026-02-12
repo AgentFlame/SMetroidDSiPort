@@ -41,8 +41,8 @@ typedef enum {
 typedef struct {
     BossTypeID  type;
     PhysicsBody body;
-    int16_t     hp;
-    int16_t     hp_max;
+    int32_t     hp;
+    int32_t     hp_max;
     uint16_t    phase;          /* Multi-phase bosses (0-indexed) */
     uint16_t    ai_state;       /* Current AI state (boss-specific enum) */
     uint16_t    ai_timer;       /* General-purpose frame timer */
@@ -78,7 +78,7 @@ void boss_update(void);
 void boss_render(void);
 
 /* Apply damage to boss (respects vulnerability and invuln timer) */
-void boss_damage(int16_t damage);
+void boss_damage(int32_t damage);
 
 /* Query */
 bool boss_is_active(void);

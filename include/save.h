@@ -1,8 +1,8 @@
 /**
- * save.h - Save system (SNES-compatible SRAM format)
+ * save.h - Save system (SNES-compatible format via FAT filesystem)
  *
- * The DS SRAM uses the exact same 8KB layout as the original SNES
- * Super Metroid. Save files are plug-and-play compatible:
+ * The .sav file uses the exact same 8KB layout as the original SNES
+ * Super Metroid SRAM. Save files are plug-and-play compatible:
  * rename .sav <-> .srm to transfer between DS and SNES emulators.
  *
  * SNES SRAM layout (8KB):
@@ -12,8 +12,9 @@
  *   0x0CC8-0x1323: Slot 2
  *   0x1FF0-0x1FFF: Redundant checksums + complements
  *
- * Internally, save.c converts between our game-facing SaveData struct
- * and the SNES byte-level format. Game code never touches raw SRAM.
+ * Backed by libfat (SD card on flash carts, emulator filesystem).
+ * Falls back to in-memory-only if FAT is unavailable.
+ * Game code never touches the raw save image.
  *
  * Implemented in: source/save.c (M15)
  */

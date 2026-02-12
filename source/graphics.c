@@ -142,16 +142,19 @@ void graphics_end_frame(void) {
 
 void graphics_load_bg_tileset(int layer, const void* data, uint32_t size) {
     if (layer < 0 || layer > 3 || bg_main[layer] < 0) return;
+    DC_FlushRange(data, size);
     dmaCopy(data, bgGetGfxPtr(bg_main[layer]), size);
 }
 
 void graphics_load_bg_tilemap(int layer, const void* data, uint32_t size) {
     if (layer < 0 || layer > 3 || bg_main[layer] < 0) return;
+    DC_FlushRange(data, size);
     dmaCopy(data, bgGetMapPtr(bg_main[layer]), size);
 }
 
 void graphics_load_bg_palette(int palette_idx, const u16* palette) {
     if (palette_idx < 0 || palette_idx > 15) return;
+    DC_FlushRange(palette, 32);
     dmaCopy(palette, BG_PALETTE + (palette_idx * 16), 32);
 }
 
@@ -162,12 +165,14 @@ void graphics_load_bg_palette(int palette_idx, const u16* palette) {
 void graphics_load_sprite_tiles(const void* data, uint32_t size, int tile_offset) {
     u16* dest = oamGetGfxPtr(&oamMain, tile_offset);
     if (dest) {
+        DC_FlushRange(data, size);
         dmaCopy(data, dest, size);
     }
 }
 
 void graphics_load_sprite_palette(int palette_idx, const u16* palette) {
     if (palette_idx < 0 || palette_idx > 15) return;
+    DC_FlushRange(palette, 32);
     dmaCopy(palette, SPRITE_PALETTE + (palette_idx * 16), 32);
 }
 

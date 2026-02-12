@@ -50,10 +50,8 @@ void state_init(void) {
     current_state = STATE_TITLE;
     transition_pending = false;
 
-    /* Enter initial state */
-    if (state_table[current_state].enter) {
-        state_table[current_state].enter();
-    }
+    /* Do NOT enter initial state here -- let state_set() + state_update() handle it.
+     * This avoids entering with stub handlers before gameplay_register_states(). */
 }
 
 void state_set(GameStateID new_state) {

@@ -108,9 +108,10 @@ static void fill_room_shell(int w, int h) {
     }
 }
 
-/* Punch a 1x2 door opening in a wall column */
+/* Punch a 1x3 door opening in a wall column.
+ * Samus is 40px tall (half_h=20); 3 metatiles = 48px gives clearance. */
 static void punch_door_opening(int door_x, int door_y, int w) {
-    for (int dy = 0; dy < 2; dy++) {
+    for (int dy = 0; dy < 3; dy++) {
         int idx = (door_y + dy) * w + door_x;
         g_current_room.collision[idx] = COLL_AIR;
         g_current_room.tilemap[idx] = 0;
@@ -332,8 +333,8 @@ static void load_room_0_2(void) {
         g_current_room.collision[idx] = COLL_SOLID;
         g_current_room.tilemap[idx] = 2;
     }
-    /* Top platform */
-    for (int x = 8; x <= 13; x++) {
+    /* Top platform (extended to x=14 for right door access) */
+    for (int x = 8; x <= 14; x++) {
         int idx = 8 * w + x;
         g_current_room.collision[idx] = COLL_SOLID;
         g_current_room.tilemap[idx] = 2;
@@ -345,8 +346,9 @@ static void load_room_0_2(void) {
         g_current_room.tilemap[idx] = 2;
     }
 
-    /* Lava pool at bottom (row 21, above floor) */
-    for (int x = 1; x < w - 1; x++) {
+    /* Lava pool at bottom (row 21, above floor).
+     * Starts at x=4 to leave safe landing zone near left door. */
+    for (int x = 4; x < w - 1; x++) {
         int idx = 21 * w + x;
         g_current_room.collision[idx] = COLL_HAZARD_LAVA;
         g_current_room.tilemap[idx] = 3;  /* hazard tile */
@@ -354,8 +356,8 @@ static void load_room_0_2(void) {
 
     /* Door opening on left wall near bottom: tiles (0, 19) and (0, 20) */
     punch_door_opening(0, 19, w);
-    /* Door opening on right wall near top: tiles (15, 3) and (15, 4) */
-    punch_door_opening(15, 3, w);
+    /* Door opening on right wall: tiles (15, 5)-(15, 7), aligned with top platform */
+    punch_door_opening(15, 5, w);
 
     /* Doors */
     g_current_room.doors[0] = (DoorData){
@@ -367,8 +369,8 @@ static void load_room_0_2(void) {
     g_current_room.doors[1] = (DoorData){
         .dest_area = 0, .dest_room = 3,
         .direction = DIR_RIGHT, .door_type = 0,
-        .door_x = 15, .door_y = 3,
-        .spawn_x = 32, .spawn_y = 128
+        .door_x = 15, .door_y = 5,
+        .spawn_x = 32, .spawn_y = 140
     };
     g_current_room.door_count = 2;
 
@@ -413,7 +415,7 @@ static void load_room_0_3(void) {
         .dest_area = 0, .dest_room = 2,
         .direction = DIR_LEFT, .door_type = 0,
         .door_x = 0, .door_y = 7,
-        .spawn_x = 224, .spawn_y = 64
+        .spawn_x = 224, .spawn_y = 108
     };
     g_current_room.door_count = 1;
 
@@ -545,8 +547,8 @@ const DoorData* room_check_door_collision(const PhysicsBody* body) {
     for (int i = 0; i < g_current_room.door_count; i++) {
         const DoorData* d = &g_current_room.doors[i];
 
-        /* Door occupies tile (door_x, door_y) to (door_x, door_y+1) */
-        if (px == d->door_x && py >= d->door_y && py <= d->door_y + 1) {
+        /* Door occupies tile (door_x, door_y) to (door_x, door_y+2) */
+        if (px == d->door_x && py >= d->door_y && py <= d->door_y + 2) {
             return d;
         }
     }
@@ -629,8 +631,11 @@ void room_update_crumble_blocks(void) {
 void room_upload_to_vram(void) {
     if (!g_current_room.loaded) return;
 
-    /* 1. Upload test tileset (4 tiles: empty, solid, platform, hazard) */
-    u8 tileset[32 * 4];
+    /* 1. Upload test tileset (4 tiles: empty, solid, platform, hazard)
+     * MUST be static: DMA cannot access DTCM (stack memory).
+     * Local arrays live on the DTCM stack, which is tightly coupled
+     * to the CPU and not visible on the main bus that DMA uses. */
+    static u8 tileset[32 * 4];
     memcpy(&tileset[0],   test_tile_empty,    32);
     memcpy(&tileset[32],  test_tile_solid,    32);
     memcpy(&tileset[64],  test_tile_platform, 32);

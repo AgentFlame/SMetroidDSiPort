@@ -1,26 +1,27 @@
 /**
- * save.c - Save system via SRAM (M15)
+ * save.c - Save system via FAT filesystem (M15)
  *
- * SNES-compatible save format. The first 8KB of DS SRAM mirrors
- * the exact SNES Super Metroid SRAM layout byte-for-byte.
+ * SNES-compatible save format. The .sav file is the exact 8KB
+ * SNES Super Metroid SRAM layout byte-for-byte.
  *
  * To transfer saves:
- *   SNES -> DS: Copy .srm as first 8KB of .sav
- *   DS -> SNES: Copy first 8KB of .sav as .srm
+ *   SNES -> DS: Copy .srm as SuperMetroidDS.sav alongside the .nds
+ *   DS -> SNES: Copy SuperMetroidDS.sav as .srm
  *
- * DS SRAM is accessed byte-by-byte (8-bit bus at 0x0A000000).
+ * Backed by libfat filesystem (SD card on flash carts, emulator FS).
+ * Falls back to in-memory-only (no persistence) if FAT unavailable.
  */
 
 #include "save.h"
 #include <nds.h>
+#include <nds/dldi.h>
+#include <fat.h>
 #include <string.h>
 #include <stdio.h>
 
 /* ========================================================================
  * SNES SRAM Geometry
  * ======================================================================== */
-
-#define SRAM_BASE       ((volatile uint8_t*)0x0A000000)
 
 #define SNES_SRAM_SIZE  0x2000   /* 8KB total */
 #define SNES_SLOT_SIZE  0x065C   /* 1628 bytes per slot */
@@ -104,46 +105,67 @@
  * Static Data
  * ======================================================================== */
 
+#define SAVE_FILE_NAME "SuperMetroidDS.sav"
+
 static const uint16_t slot_offsets[3] = {
     SNES_SLOT_0, SNES_SLOT_1, SNES_SLOT_2
 };
 
+/* In-memory image of the full 8KB SNES SRAM.
+ * Loaded from .sav file at init, flushed back on write/delete. */
+static uint8_t sram_image[SNES_SRAM_SIZE];
+
 /* Working buffer for building/reading a slot */
 static uint8_t slot_buf[SNES_SLOT_SIZE];
 
+/* Whether FAT filesystem is available for persistence */
+static bool fat_available;
+
 /* ========================================================================
- * SRAM Access (8-bit bus -- byte-by-byte only)
+ * FAT File I/O
+ * ======================================================================== */
+
+static void sram_load_from_file(void) {
+    FILE* f = fopen(SAVE_FILE_NAME, "rb");
+    if (f) {
+        fread(sram_image, 1, SNES_SRAM_SIZE, f);
+        fclose(f);
+        fprintf(stderr, "save: loaded %s\n", SAVE_FILE_NAME);
+    }
+    /* If file doesn't exist, sram_image stays zeroed (no saves) */
+}
+
+static void sram_flush_to_file(void) {
+    if (!fat_available) return;
+    FILE* f = fopen(SAVE_FILE_NAME, "wb");
+    if (f) {
+        fwrite(sram_image, 1, SNES_SRAM_SIZE, f);
+        fclose(f);
+    }
+}
+
+/* ========================================================================
+ * SRAM Image Access (operate on in-memory buffer)
  * ======================================================================== */
 
 static void sram_read_bytes(uint32_t offset, void* dst, uint32_t len) {
-    volatile uint8_t* src = SRAM_BASE + offset;
-    uint8_t* d = (uint8_t*)dst;
-    for (uint32_t i = 0; i < len; i++) {
-        d[i] = src[i];
-    }
+    memcpy(dst, &sram_image[offset], len);
 }
 
 static void sram_write_bytes(uint32_t offset, const void* src, uint32_t len) {
-    volatile uint8_t* dst = SRAM_BASE + offset;
-    const uint8_t* s = (const uint8_t*)src;
-    for (uint32_t i = 0; i < len; i++) {
-        dst[i] = s[i];
-    }
+    memcpy(&sram_image[offset], src, len);
 }
 
 static void sram_zero(uint32_t offset, uint32_t len) {
-    volatile uint8_t* dst = SRAM_BASE + offset;
-    for (uint32_t i = 0; i < len; i++) {
-        dst[i] = 0;
-    }
+    memset(&sram_image[offset], 0, len);
 }
 
 static void sram_write_u8(uint32_t offset, uint8_t val) {
-    SRAM_BASE[offset] = val;
+    sram_image[offset] = val;
 }
 
 static uint8_t sram_read_u8(uint32_t offset) {
-    return SRAM_BASE[offset];
+    return sram_image[offset];
 }
 
 /* ========================================================================
@@ -391,8 +413,24 @@ static void write_default_controls(void) {
  * ======================================================================== */
 
 void save_init(void) {
-    fprintf(stderr, "save: init (SNES-compat SRAM, %u bytes/slot)\n",
-            SNES_SLOT_SIZE);
+    memset(sram_image, 0, SNES_SRAM_SIZE);
+    fat_available = false;
+
+    /* Only attempt FAT if DLDI driver was actually patched by a loader.
+     * __dldi_start is in ARM7 WRAM (0x0380B000) -- NOT ARM9-accessible.
+     * Use dldiDumpInternal() to safely copy the DLDI header via PXI.
+     * The unpatched stub has disc.features == 0. Calling fatInitDefault()
+     * on an unpatched DLDI can hang (e.g. melonDS without SD configured). */
+    DLDI_INTERFACE dldi_copy;
+    if (dldiDumpInternal(&dldi_copy) && dldi_copy.disc.features != 0) {
+        fat_available = fatInitDefault();
+        if (fat_available) {
+            sram_load_from_file();
+        }
+    }
+
+    fprintf(stderr, "save: init, persistence=%s (%u bytes/slot)\n",
+            fat_available ? "FAT" : "none", SNES_SLOT_SIZE);
 }
 
 bool save_write(int slot, const SaveData* data) {
@@ -450,13 +488,16 @@ bool save_write(int slot, const SaveData* data) {
      * An SNES save loaded here will lose map/item/door progress, but
      * stats, equipment, position, bosses, and time are preserved. */
 
-    /* --- Write to SRAM --- */
+    /* --- Write to SRAM image --- */
     sram_write_bytes(slot_offsets[slot], slot_buf, SNES_SLOT_SIZE);
 
     /* Calculate and store checksums */
     uint8_t chk_hi, chk_lo;
     snes_checksum(slot_buf, SNES_SLOT_SIZE, &chk_hi, &chk_lo);
     write_checksums(slot, chk_hi, chk_lo);
+
+    /* Flush to filesystem */
+    sram_flush_to_file();
 
     fprintf(stderr, "save: write slot %d (chk=%02X%02X)\n",
             slot, chk_hi, chk_lo);
@@ -520,6 +561,9 @@ void save_delete(int slot) {
      * Since complement should be chk^0xFF, storing 0 for both
      * guarantees validation fails. */
     write_checksums(slot, 0, 0);
+
+    /* Flush to filesystem */
+    sram_flush_to_file();
 
     fprintf(stderr, "save: delete slot %d\n", slot);
 }

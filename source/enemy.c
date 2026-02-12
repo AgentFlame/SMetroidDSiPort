@@ -77,6 +77,13 @@ static const EnemyTypeDef enemy_defs[ENEMY_TYPE_COUNT] = {
     [ENEMY_ZEBESIAN]   = { 400, 32, 0x00010000, INT_TO_FX(6), INT_TO_FX(10) },
 };
 
+/* Solid tile test (matches physics.c is_collision_solid logic) */
+static inline bool tile_is_solid(uint8_t coll) {
+    if (coll == COLL_SOLID) return true;
+    if ((coll & 0xF0) == COLL_SPECIAL_BASE) return true;
+    return false;
+}
+
 /* ========================================================================
  * AI: Crawler (Zoomer, Geemer)
  *
@@ -113,7 +120,7 @@ static void ai_crawler(Enemy* e) {
         int foot_y = FX_TO_INT(e->body.pos.y + e->body.hitbox.half_h)
                      >> TILE_SHIFT;
 
-        if (room_get_collision(look_x, foot_y) != COLL_SOLID) {
+        if (!tile_is_solid(room_get_collision(look_x, foot_y))) {
             e->facing = (e->facing == DIR_RIGHT) ? DIR_LEFT : DIR_RIGHT;
         }
     }
