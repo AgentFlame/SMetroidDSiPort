@@ -667,6 +667,46 @@ static void run_boss_tests(void) {
     }
     test("bt_dead", !boss_is_active());
 
+    /* --- Kraid tests --- */
+
+    /* Test: spawn Kraid */
+    boss_init();
+    boss_spawn(BOSS_KRAID, INT_TO_FX(200), INT_TO_FX(100));
+    test("kr_active", boss_is_active());
+    test("kr_hp=1000", g_boss.hp == 1000);
+    test("kr_type", g_boss.type == BOSS_KRAID);
+    test("kr_not_vuln", g_boss.vulnerable == false);
+    /* Kraid starts below target (rising entrance) */
+    test("kr_below", g_boss.body.pos.y > INT_TO_FX(100));
+
+    /* Test: damage blocked when not vulnerable (mouth closed) */
+    g_boss.ai_state = 1; /* KRAID_IDLE */
+    boss_damage(100);
+    test("kr_dmg_block", g_boss.hp == 1000);
+
+    /* Test: damage works during roar (mouth open) */
+    g_boss.ai_state = 2; /* KRAID_ROAR */
+    g_boss.vulnerable = true;
+    boss_damage(200);
+    test("kr_dmg_ok", g_boss.hp == 800);
+    /* Kraid flinches on hit — mouth closes */
+    test("kr_flinch", g_boss.ai_state == 5); /* KRAID_FLINCH */
+    test("kr_mouth_close", g_boss.vulnerable == false);
+
+    /* Test: kill Kraid */
+    boss_init();
+    boss_spawn(BOSS_KRAID, INT_TO_FX(200), INT_TO_FX(100));
+    g_boss.vulnerable = true;
+    g_boss.hp = 10;
+    boss_damage(20);
+    test("kr_hp0", g_boss.hp <= 0);
+    test("kr_still_active", boss_is_active());
+    for (int f = 0; f < 200; f++) {
+        boss_update();
+        if (!boss_is_active()) break;
+    }
+    test("kr_dead", !boss_is_active());
+
     /* Cleanup */
     boss_init();
 
@@ -815,12 +855,12 @@ static void gameplay_update(void) {
         static BossTypeID next_boss = BOSS_SPORE_SPAWN;
         fx32 spawn_x = g_player.body.pos.x + INT_TO_FX(64);
         fx32 spawn_y = INT_TO_FX(48);
-        if (next_boss == BOSS_CROCOMIRE || next_boss == BOSS_BOMB_TORIZO) {
+        if (next_boss != BOSS_SPORE_SPAWN) {
             spawn_y = g_player.body.pos.y;
         }
         boss_spawn(next_boss, spawn_x, spawn_y);
         next_boss++;
-        if (next_boss > BOSS_BOMB_TORIZO) {
+        if (next_boss > BOSS_KRAID) {
             next_boss = BOSS_SPORE_SPAWN;
         }
     }

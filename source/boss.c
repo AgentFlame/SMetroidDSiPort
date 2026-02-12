@@ -8,6 +8,7 @@
  *   Spore Spawn  - 960 HP, pendulum swing, vulnerability window, spore attack
  *   Crocomire    - Push mechanic (no HP kill), advances/retreats, spit/lunge
  *   Bomb Torizo  - 800 HP, statue wake, bomb throw, lunge attack
+ *   Kraid        - 1000 HP, mouth-only vulnerability, fingernails, belly spikes
  *
  * Boss-specific param usage:
  *   Spore Spawn:
@@ -612,6 +613,221 @@ static void bomb_torizo_update(void) {
 }
 
 /* ========================================================================
+ * Kraid AI
+ *
+ * 1000 HP multi-part boss. Only vulnerable when mouth is open (roaring).
+ * Attacks with fingernail projectiles and belly spikes.
+ * Begins fight by rising from the floor.
+ *
+ * Behavior cycle:
+ *   1. RISE:        Emerge from floor (one-time entrance)
+ *   2. IDLE:        Standing, mouth closed, choosing attacks
+ *   3. ROAR:        Mouth open — VULNERABLE
+ *   4. FINGERNAILS: Shoot 3 fingernail projectiles
+ *   5. BELLY_SPIKE: Shoot belly spikes upward (arc)
+ *   6. FLINCH:      Hit reaction (mouth closes)
+ *   7. DEATH:       Collapse animation
+ *
+ * Boss-specific param usage:
+ *   param_a     = rise target Y
+ *   param_b     = attacks this cycle (reset on roar)
+ *   anchor_x    = (unused)
+ *   anchor_y    = (unused)
+ *   sub_timer   = idle duration
+ *   attack_count = total attacks since last roar
+ * ======================================================================== */
+
+/* Kraid AI states */
+enum {
+    KRAID_RISE = 0,
+    KRAID_IDLE,
+    KRAID_ROAR,
+    KRAID_FINGERNAILS,
+    KRAID_BELLY_SPIKE,
+    KRAID_FLINCH,
+    KRAID_DEATH
+};
+
+/* Kraid constants */
+#define KRAID_HP               1000
+#define KRAID_CONTACT_DAMAGE   40
+#define KRAID_HITBOX_HALF_W    INT_TO_FX(20)
+#define KRAID_HITBOX_HALF_H    INT_TO_FX(24)
+#define KRAID_RISE_SPEED       INT_TO_FX(1)  /* 1 px/f rising */
+#define KRAID_RISE_OFFSET      INT_TO_FX(48) /* Start 48px below target */
+#define KRAID_IDLE_MIN         60
+#define KRAID_IDLE_RANGE       60
+#define KRAID_ROAR_FRAMES      90            /* ~1.5 sec vulnerability window */
+#define KRAID_FLINCH_FRAMES    15
+#define KRAID_NAIL_FRAMES      30            /* Fingernail attack duration */
+#define KRAID_SPIKE_FRAMES     30            /* Belly spike attack duration */
+#define KRAID_NAIL_SPEED       INT_TO_FX(3)  /* Fingernail projectile speed */
+#define KRAID_SPIKE_VX         INT_TO_FX(1)
+#define KRAID_SPIKE_VY         (-INT_TO_FX(4)) /* Upward arc */
+#define KRAID_ROAR_EVERY       3             /* Roar after every N attacks */
+#define KRAID_DEATH_FRAMES     90
+
+static void kraid_init(void) {
+    g_boss.hp = KRAID_HP;
+    g_boss.hp_max = KRAID_HP;
+    g_boss.damage_contact = KRAID_CONTACT_DAMAGE;
+    g_boss.body.hitbox.half_w = KRAID_HITBOX_HALF_W;
+    g_boss.body.hitbox.half_h = KRAID_HITBOX_HALF_H;
+    g_boss.vulnerable = false;
+    g_boss.ai_state = KRAID_RISE;
+    g_boss.ai_timer = 0;
+    g_boss.ai_counter = 0;
+    g_boss.sub_timer = 0;
+    g_boss.attack_count = 0;
+
+    /* Rise from below: target Y = spawn Y, start lower */
+    g_boss.param_a = g_boss.body.pos.y;
+    g_boss.body.pos.y += KRAID_RISE_OFFSET;
+}
+
+static void kraid_update(void) {
+    Boss* b = &g_boss;
+
+    if (b->invuln_timer > 0) b->invuln_timer--;
+
+    switch (b->ai_state) {
+        case KRAID_RISE: {
+            /* Rise from floor to target position */
+            b->body.pos.y -= KRAID_RISE_SPEED;
+            if (b->body.pos.y <= b->param_a) {
+                b->body.pos.y = b->param_a;
+                b->ai_state = KRAID_IDLE;
+                b->ai_timer = 0;
+                b->sub_timer = KRAID_IDLE_MIN;
+                camera_shake(20, 3);
+            }
+            break;
+        }
+
+        case KRAID_IDLE: {
+            b->ai_timer++;
+            if (b->ai_timer >= b->sub_timer) {
+                /* After enough attacks, open mouth (roar) */
+                if (b->attack_count >= KRAID_ROAR_EVERY) {
+                    b->ai_state = KRAID_ROAR;
+                    b->ai_timer = 0;
+                    b->vulnerable = true;
+                    b->attack_count = 0;
+                } else {
+                    /* Choose attack: fingernails (common) or belly spike */
+                    if ((b->ai_counter & 1) == 0) {
+                        b->ai_state = KRAID_FINGERNAILS;
+                    } else {
+                        b->ai_state = KRAID_BELLY_SPIKE;
+                    }
+                    b->ai_timer = 0;
+                }
+            }
+            break;
+        }
+
+        case KRAID_ROAR: {
+            b->ai_timer++;
+            if (b->ai_timer >= KRAID_ROAR_FRAMES) {
+                b->ai_state = KRAID_IDLE;
+                b->ai_timer = 0;
+                b->vulnerable = false;
+                b->sub_timer = KRAID_IDLE_MIN +
+                               (b->ai_counter % KRAID_IDLE_RANGE);
+            }
+            break;
+        }
+
+        case KRAID_FINGERNAILS: {
+            /* Shoot 3 fingernails on first frame (spread pattern) */
+            if (b->ai_timer == 0) {
+                fx32 dx = g_player.body.pos.x - b->body.pos.x;
+                fx32 base_vx = (dx > 0) ? KRAID_NAIL_SPEED :
+                                           -KRAID_NAIL_SPEED;
+                /* Top nail */
+                projectile_spawn(PROJ_ENEMY_BULLET, PROJ_OWNER_ENEMY,
+                                b->body.pos.x, b->body.pos.y - INT_TO_FX(16),
+                                base_vx, -(KRAID_NAIL_SPEED >> 2));
+                /* Middle nail */
+                projectile_spawn(PROJ_ENEMY_BULLET, PROJ_OWNER_ENEMY,
+                                b->body.pos.x, b->body.pos.y,
+                                base_vx, 0);
+                /* Bottom nail */
+                projectile_spawn(PROJ_ENEMY_BULLET, PROJ_OWNER_ENEMY,
+                                b->body.pos.x, b->body.pos.y + INT_TO_FX(16),
+                                base_vx, KRAID_NAIL_SPEED >> 2);
+                b->attack_count++;
+                b->ai_counter++;
+            }
+
+            b->ai_timer++;
+            if (b->ai_timer >= KRAID_NAIL_FRAMES) {
+                b->ai_state = KRAID_IDLE;
+                b->ai_timer = 0;
+                b->sub_timer = KRAID_IDLE_MIN +
+                               (b->ai_counter % KRAID_IDLE_RANGE);
+            }
+            break;
+        }
+
+        case KRAID_BELLY_SPIKE: {
+            /* Shoot belly spikes in arc on first frame */
+            if (b->ai_timer == 0) {
+                fx32 dx = g_player.body.pos.x - b->body.pos.x;
+                fx32 spike_vx = (dx > 0) ? KRAID_SPIKE_VX : -KRAID_SPIKE_VX;
+                projectile_spawn(PROJ_ENEMY_BULLET, PROJ_OWNER_ENEMY,
+                                b->body.pos.x, b->body.pos.y + INT_TO_FX(8),
+                                spike_vx, KRAID_SPIKE_VY);
+                /* Second spike offset */
+                projectile_spawn(PROJ_ENEMY_BULLET, PROJ_OWNER_ENEMY,
+                                b->body.pos.x, b->body.pos.y + INT_TO_FX(8),
+                                spike_vx + (spike_vx >> 1), KRAID_SPIKE_VY);
+                b->attack_count++;
+                b->ai_counter++;
+            }
+
+            b->ai_timer++;
+            if (b->ai_timer >= KRAID_SPIKE_FRAMES) {
+                b->ai_state = KRAID_IDLE;
+                b->ai_timer = 0;
+                b->sub_timer = KRAID_IDLE_MIN +
+                               (b->ai_counter % KRAID_IDLE_RANGE);
+            }
+            break;
+        }
+
+        case KRAID_FLINCH: {
+            b->ai_timer++;
+            if (b->ai_timer >= KRAID_FLINCH_FRAMES) {
+                b->ai_state = KRAID_IDLE;
+                b->ai_timer = 0;
+                b->vulnerable = false;
+                b->sub_timer = KRAID_IDLE_MIN;
+            }
+            break;
+        }
+
+        case KRAID_DEATH: {
+            /* Sink back down */
+            b->body.pos.y += KRAID_RISE_SPEED;
+            b->ai_timer++;
+            if (b->ai_timer >= KRAID_DEATH_FRAMES) {
+                b->active = false;
+            }
+            break;
+        }
+    }
+
+    /* Contact damage (not during rise or death) */
+    if (b->active && b->ai_state != KRAID_RISE && b->ai_state != KRAID_DEATH) {
+        if (boss_aabb_overlap(b->body.pos, b->body.hitbox,
+                              g_player.body.pos, g_player.body.hitbox)) {
+            player_damage(b->damage_contact);
+        }
+    }
+}
+
+/* ========================================================================
  * AI Dispatch Tables
  * ======================================================================== */
 
@@ -622,12 +838,14 @@ static const BossInitFn boss_init_fns[BOSS_TYPE_COUNT] = {
     [BOSS_SPORE_SPAWN]  = spore_spawn_init,
     [BOSS_CROCOMIRE]    = crocomire_init,
     [BOSS_BOMB_TORIZO]  = bomb_torizo_init,
+    [BOSS_KRAID]        = kraid_init,
 };
 
 static const BossUpdateFn boss_update_fns[BOSS_TYPE_COUNT] = {
     [BOSS_SPORE_SPAWN]  = spore_spawn_update,
     [BOSS_CROCOMIRE]    = crocomire_update,
     [BOSS_BOMB_TORIZO]  = bomb_torizo_update,
+    [BOSS_KRAID]        = kraid_update,
 };
 
 /* ========================================================================
@@ -723,6 +941,13 @@ void boss_damage(int16_t damage) {
     g_boss.invuln_timer = BOSS_HIT_INVULN;
     camera_shake(5, 2);
 
+    /* Kraid: flinch on hit (mouth closes, vulnerability ends) */
+    if (g_boss.type == BOSS_KRAID && g_boss.hp > 0) {
+        g_boss.ai_state = KRAID_FLINCH;
+        g_boss.ai_timer = 0;
+        g_boss.vulnerable = false;
+    }
+
     if (g_boss.hp <= 0) {
         g_boss.hp = 0;
         g_boss.vulnerable = false;
@@ -736,6 +961,9 @@ void boss_damage(int16_t damage) {
                 break;
             case BOSS_BOMB_TORIZO:
                 g_boss.ai_state = BT_DEATH;
+                break;
+            case BOSS_KRAID:
+                g_boss.ai_state = KRAID_DEATH;
                 break;
             default:
                 g_boss.active = false;
